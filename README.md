@@ -16,6 +16,7 @@ Requires Node.js 24+.
 2. `cp .env.example .env` and set `DATABASE_URL`:
    - **MongoDB Atlas** (default): the `mongodb+srv://…` string from Atlas → Connect → Drivers. Make sure your IP is on the Atlas network access list.
    - **Local**: set `MONGO_ROOT_PASSWORD`, run `docker compose up -d --wait`, and use the local URI shown in `.env.example`.
+   - If `db:sync` fails with `querySrv ECONNREFUSED` (Node can't resolve SRV records on some Windows setups), use Atlas's standard connection string instead: `mongodb://<user>:<password>@<host1>,<host2>,<host3>/?tls=true&authSource=admin&replicaSet=<replica-set>`. The hosts and replica set name are listed in Atlas under the cluster's connection options.
 3. `npm run db:sync` — creates collections and indexes.
 4. `npm run dev` — http://localhost:3000
 

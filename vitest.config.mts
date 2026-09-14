@@ -1,5 +1,4 @@
 import react from "@vitejs/plugin-react";
-import tsconfigPaths from "vite-tsconfig-paths";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig(({ mode }) => {
@@ -7,7 +6,8 @@ export default defineConfig(({ mode }) => {
   // with `npm run test:integration` (vitest --mode integration).
   const integration = mode === "integration";
   return {
-    plugins: [tsconfigPaths(), react()],
+    resolve: { tsconfigPaths: true },
+    plugins: [react()],
     test: {
       environment: "node",
       include: integration ? ["src/**/*.integration.test.ts"] : ["src/**/*.test.{ts,tsx}"],
