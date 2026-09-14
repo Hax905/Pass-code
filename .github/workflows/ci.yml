@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Lint, format, typecheck, unit tests, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  database:
+    name: Database integration (docker-compose MongoDB)
+    runs-on: ubuntu-latest
+    env:
+      MONGO_ROOT_USERNAME: netguard
+      MONGO_ROOT_PASSWORD: netguard-ci-only
+      DATABASE_URL: mongodb://netguard:netguard-ci-only@127.0.0.1:27017/?authSource=admin&directConnection=true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - name: Start MongoDB from docker-compose.yml
+        run: docker compose up -d --wait --wait-timeout 180
+      - run: npm ci
+      - run: npm run db:sync
+      - run: npm run test:integration
+      - name: MongoDB logs on failure
+        if: failure()
+        run: docker compose logs mongo
