@@ -31,9 +31,9 @@ This file is the shared memory between Claude Code sessions. A session may pick 
 
 - [x] Initialize Next.js + TypeScript project per STYLES.md §2.1–2.2
 - [x] Set up Tailwind CSS + shadcn/ui
-- [ ] Set up MongoDB (Mongoose) connection; define initial collections (`users`, `rotation_events`, `password_requests`, `rotation_settings`, `audit_log`) per STYLES.md §2.3 — *pivoted from Prisma + PostgreSQL*
-- [ ] Set up `docker-compose.yml` for local MongoDB (auth on, single-node replica set) — *pivoted from Postgres*
-- [ ] Set up ESLint + Prettier + CI (GitHub Actions: lint, typecheck, test)
+- [x] Set up MongoDB (Mongoose) connection; define initial collections (`users`, `rotation_events`, `password_requests`, `rotation_settings`, `audit_log`) per STYLES.md §2.3 — *pivoted from Prisma + PostgreSQL*
+- [x] Set up `docker-compose.yml` for local MongoDB (auth on, single-node replica set) — *pivoted from Postgres*
+- [x] Set up ESLint + Prettier + CI (GitHub Actions: lint, typecheck, test)
 - [x] Create `.env.example` documenting all required environment variables
 - [x] Add a placeholder landing page confirming the app boots
 
@@ -45,6 +45,9 @@ This file is the shared memory between Claude Code sessions. A session may pick 
 - [2026-09-14] [Completed] `.env.example` documenting variables for Phases 0, 1, 2 and 4 — `.env.example`
 - [2026-09-14] [Pivot] PostgreSQL + Prisma → **MongoDB (Atlas) + Mongoose**, at the project owner's request (local Postgres admin credentials were unavailable). Prisma 7 has no supported MongoDB runtime, so Mongoose is used instead. No migrations: schemas use `strict: "throw"` and `npm run db:sync` creates collections/indexes. Database must be a replica set (transactions). Downstream: Phases 1–5 use `@/lib/db` models; references between collections are not DB-enforced, so integrity checks belong in app code/tests; Phase 2's Auth.js setup must not use the Prisma adapter. STYLES.md §2.3/§2.8/§3/§4 updated — `src/lib/db/`, `scripts/db-sync.ts`, `docker-compose.yml`, `STYLES.md`
 - [2026-09-14] [Pivot] JWT sessions + immediate revocation: added `users.tokenVersion` and a `PENDING` status. Guards must check `status === ACTIVE` and a matching `tokenVersion` from the DB on every protected request; revoke/role change/password reset increments it. Affects Phase 2 guards and revoke — `src/lib/db/models.ts`, `STYLES.md` §2.4
+- [2026-09-14] [Completed] Mongoose connection + models for all five collections, `db:sync`, unit tests (schema validation) and integration tests (unique email, hash not selected by default, multi-document transactions, isolated `netguard_test` DB) — `src/lib/db/`, `scripts/db-sync.ts`
+- [2026-09-14] [Completed] GitHub Actions CI: lint, format check, typecheck, unit tests, build, plus a job that starts `docker-compose.yml` MongoDB, runs `db:sync` and integration tests. First run green (run 34875977587). Repo: github.com/Hax905/Pass-code — `.github/workflows/ci.yml`
+- [2026-09-14] [Completed] **Phase 0 checkpoint met.** Note: the project owner's Atlas cluster was not yet exercised locally (connection string not yet in the local `.env`); run `npm run db:sync && npm run test:integration` once it is
 - [2026-09-14] [Completed] Pinned install-script approvals for build tooling in `package.json` `allowScripts` (npm 12 blocks unapproved install scripts) — `package.json`
 
 ---
