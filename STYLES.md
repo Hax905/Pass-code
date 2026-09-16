@@ -57,8 +57,10 @@ This document answers the PRD's open questions with concrete defaults so develop
 - **Rationale:** a single model file keeps the data model in one readable place for every session. Tradeoff accepted with the pivot: MongoDB doesn't enforce references between collections, so integrity checks (e.g. a request's user exists) live in application code and tests.
 
 ### 2.4 Authentication
-- **Library:** Auth.js (NextAuth) with a credentials provider (email/password) for v1
-- **Password hashing:** bcrypt
+- **Library:** Auth.js (NextAuth) with a credentials provider (email/password) for v1: `next-auth@5` (beta, pinned exactly), configured in `src/auth.ts`
+- **Password hashing:** bcrypt (cost 12; passwords must be 12 characters to 72 bytes)
+- **Accounts:** self-registration creates PENDING accounts that an admin approves; admins can also provision ACTIVE accounts. The first admin is created with `npm run user:create-admin`.
+- **Route protection:** wrap route handlers in `withAuth("user" | "admin", handler)` from `src/features/auth/route-guard.ts`. It performs the database check below and refuses cross-origin state-changing requests. Repeated failed logins lock an email for 15 minutes.
 - **Session:** JWT-based sessions via Auth.js. **Every protected request must also load the user from the database and reject the session if `status` isn't `ACTIVE` or the token's `tokenVersion` doesn't match the user's.** A JWT alone stays valid until it expires, which would break PRD §8's requirement that revocation is immediate. Revoking a user, changing their role or resetting their password increments `tokenVersion`.
 - **Designed for extension:** Auth.js's provider model means Google/Microsoft SSO can be added later as an additional provider without restructuring the auth system.
 

@@ -86,18 +86,27 @@ This file is the shared memory between Claude Code sessions. A session may pick 
 ## Phase 2 — Authentication & Authorization Layer
 *Goal: individual identity and role-based access work end-to-end, independently of the chatbot or admin UI.*
 
-- [ ] Set up Auth.js with credentials provider per STYLES.md §2.4
-- [ ] Implement user lifecycle logic on the `users` fields defined in Phase 0 (role, status PENDING/ACTIVE/REVOKED, tokenVersion)
-- [ ] Implement registration/login flow (admin-provisioned or self-register + admin approval — confirm which per STYLES.md §1)
-- [ ] Implement role-based route/API guards (admin-only vs. authenticated-user vs. public) — each guard re-reads the user from the DB and rejects unless `status === ACTIVE` and the session's `tokenVersion` matches (STYLES.md §2.4)
-- [ ] Implement "revoke user" function (immediate effect, not tied to rotation cycle) — sets `REVOKED`, increments `tokenVersion`, writes `audit_log` in one transaction
-- [ ] Implement `audit_log` writes for auth-sensitive actions (login, revoke, role change)
-- [ ] Write tests: login success/failure, guard enforcement, revoke-takes-immediate-effect
+- [x] Set up Auth.js with credentials provider per STYLES.md §2.4
+- [x] Implement user lifecycle logic on the `users` fields defined in Phase 0 (role, status PENDING/ACTIVE/REVOKED, tokenVersion)
+- [x] Implement registration/login flow — *both: admin-provisioned (ACTIVE) and self-register (PENDING until an admin approves)*
+- [x] Implement role-based route/API guards (admin-only vs. authenticated-user vs. public) — each guard re-reads the user from the DB and rejects unless `status === ACTIVE` and the session's `tokenVersion` matches (STYLES.md §2.4)
+- [x] Implement "revoke user" function (immediate effect, not tied to rotation cycle) — sets `REVOKED`, increments `tokenVersion`, writes `audit_log` in one transaction
+- [x] Implement `audit_log` writes for auth-sensitive actions (login, revoke, role change)
+- [x] Write tests: login success/failure, guard enforcement, revoke-takes-immediate-effect
 
 **Checkpoint definition of done:** A user can register/be provisioned, log in, and be denied access to a protected test route unless authorized — all testable via API calls without the admin UI or chatbot existing yet.
 
 **Session Log:**
-- _(empty)_
+- [2026-09-16] [Completed] Auth.js v5 (`next-auth@5.0.0-beta.32`, the Auth.js line that supports Next 16; pinned exactly because it is a beta) with a credentials provider, JWT sessions (12 h max age) carrying `sub`, `role`, `tokenVersion`; handlers at `/api/auth/*` — `src/auth.ts`, `src/types/next-auth.d.ts`, `src/app/api/auth/[...nextauth]/route.ts`, `.env` (local only: `AUTH_SECRET`, `AUTH_URL`)
+- [2026-09-16] [Completed] Passwords: bcrypt (cost 12), 12 characters minimum, 72 bytes maximum (bcrypt ignores anything longer), must not equal the email; unknown emails are checked against a dummy hash so timing doesn't reveal which accounts exist — `src/features/auth/password.ts`
+- [2026-09-16] [Completed] User lifecycle: `registerUser` (PENDING), `provisionUser` (ACTIVE), `bootstrapAdmin`, `approveUser`, `revokeUser`, `changeUserRole`, `resetUserPassword`, `listUsers`. Each change and its `audit_log` entry are written in one transaction; revoke, role change and password reset increment `tokenVersion`. Admins cannot revoke or demote themselves or the last active admin — `src/features/auth/users.ts`, `errors.ts`, `types.ts`
+- [2026-09-16] [Completed] Login: `authenticateCredentials` audits `auth.login.succeeded` / `auth.login.failed` (with reason, never the password); PENDING/REVOKED status is only revealed after a correct password — `src/features/auth/login.ts`
+- [2026-09-16] [Completed] Guards: `authorizeSession` (DB re-read: ACTIVE + matching `tokenVersion`, ADMIN for admin level; refusals of existing sessions audited as `auth.access_denied`) and `withAuth(level, handler)` for route handlers, which also refuses cross-origin state-changing requests and maps user-action errors to HTTP statuses — `src/features/auth/session-guard.ts`, `route-guard.ts`
+- [2026-09-16] [Completed] API: `POST /api/register` (public; same 202 answer whether or not the email exists), `GET /api/me` (user; the reference protected route), `GET|POST /api/admin/users`, `POST /api/admin/users/[id]/approve`, `POST /api/admin/users/[id]/revoke` (admin). CLI `npm run user:create-admin -- --email …` (hidden prompt or `NETGUARD_ADMIN_PASSWORD`) — `src/app/api/`, `scripts/create-admin.ts`
+- [2026-09-16] [Completed] Tests: unit (password policy/hashing) — 52 unit tests total passing; integration (registration/approval, provisioning, duplicates, login success/failure/lockout, guards 401/403, deleted user, revoke ends the existing session immediately, rollback when the audit write fails, role change and password reset end sessions, self/last-admin protection, listing without secrets) — 29 integration tests total passing — `src/features/auth/*.test.ts`
+- [2026-09-16] [Added] **Failed-login throttling** (not in the original task list): 5 failures for an email within 15 minutes lock that email for the rest of the window, even with the right password. Uses `audit_log` (new index `{action, target, createdAt}`; run `npm run db:sync`). Tradeoff: someone who knows an email can keep it locked out; an IP-based limit can be added in Phase 5 — `src/features/auth/login.ts`, `src/lib/db/models.ts`
+- [2026-09-16] [Pivot] Role-change and password-reset functions exist with tests, but only approve and revoke have HTTP routes so far; Phase 3 should add routes for role change and password reset through `withAuth("admin", …)`. Admin-provisioned accounts get an initial password from the admin, to be shared out of band, because there is no email in v1 (STYLES.md §1). An invite or forced-change flow is a candidate once email exists — `src/features/auth/users.ts`
+- [2026-09-16] [Completed] **Phase 2 checkpoint met.** Against `next start` + `netguard_test`, 23/23 HTTP checks passed: anonymous → 401; register → 202 (also for a duplicate), weak password → 400, cross-origin → 403; pending user → 401; admin login → list/approve (409 on repeat, 404 unknown id); approved user → `/api/me` 200, admin routes 403; wrong password → no session; provisioning 201/409; admin self-revoke 409; revoke → the user's existing session gets 401 immediately and a new login is refused. Test data removed afterwards. Lint, format, typecheck, build (also without `.env`, as in CI) pass; `db:sync` applied the new index to `passcode`. The email/password decision from "Global Open Items" was kept as the STYLES.md default; SSO can be added as another Auth.js provider
 
 ---
 
@@ -179,7 +188,7 @@ This file is the shared memory between Claude Code sessions. A session may pick 
 These aren't tasks yet because they need a decision first — check here before starting Phase 1 or Phase 2:
 
 - [ ] Confirm network hardware/vendor and whether it exposes a password-change API (affects Phase 1 and Phase 6's final item)
-- [ ] Confirm auth model: stay with email/password or move to SSO before Phase 2 starts (affects Phase 2's data model)
+- [ ] Confirm auth model: stay with email/password or move to SSO before Phase 2 starts (affects Phase 2's data model) — *Phase 2 was built on the email/password default (2026-09-16); SSO would be an additional Auth.js provider, and `passwordHash` is already optional*
 - [ ] Confirm whether admins should be able to view the raw current password, or only confirm rotation status (affects Phase 3)
 
 ---

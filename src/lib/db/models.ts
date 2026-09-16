@@ -112,6 +112,8 @@ const auditLogSchema = new Schema(
 );
 auditLogSchema.index({ actor: 1, createdAt: -1 });
 auditLogSchema.index({ action: 1, createdAt: -1 });
+// Failed-login throttling looks up recent failures per email.
+auditLogSchema.index({ action: 1, target: 1, createdAt: -1 });
 
 export const User = model("User", userSchema, "users");
 export const RotationEvent = model("RotationEvent", rotationEventSchema, "rotation_events");
