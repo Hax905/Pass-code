@@ -1,4 +1,4 @@
-# NetGuard (Pass-code)
+# PassCode
 
 Automated network password rotation with individually authenticated, logged access to the current password.
 
@@ -17,7 +17,7 @@ Requires Node.js 24+.
    - **MongoDB Atlas** (default): the `mongodb+srv://…` string from Atlas → Connect → Drivers. Make sure your IP is on the Atlas network access list.
    - **Local**: set `MONGO_ROOT_PASSWORD`, run `docker compose up -d --wait`, and use the local URI shown in `.env.example`.
    - If `db:sync` fails with `querySrv ECONNREFUSED` (Node can't resolve SRV records on some Windows setups), use Atlas's standard connection string instead: `mongodb://<user>:<password>@<host1>,<host2>,<host3>/?tls=true&authSource=admin&replicaSet=<replica-set>`. The hosts and replica set name are listed in Atlas under the cluster's connection options.
-3. Set `NETGUARD_ENCRYPTION_KEY` (the command to generate one is in `.env.example`). Back it up: without it, stored passwords can't be decrypted.
+3. Set `PASSCODE_ENCRYPTION_KEY` (the command to generate one is in `.env.example`). Back it up: without it, stored passwords can't be decrypted.
 4. `npm run db:sync` — creates collections and indexes.
 5. Set `AUTH_SECRET` (`npx auth secret`, or `openssl rand -base64 33`) and `AUTH_URL`.
 6. `npm run user:create-admin -- --email you@example.com` creates the first admin (you'll be asked for a password).
@@ -33,7 +33,7 @@ Requires Node.js 24+.
 | `npm run format` / `:check` | Prettier write / check                                                              |
 | `npm run typecheck`         | Next route typegen + `tsc`                                                          |
 | `npm test`                  | Unit tests (no database needed)                                                     |
-| `npm run test:integration`  | Integration tests against `DATABASE_URL`, using a separate `netguard_test` database |
+| `npm run test:integration`  | Integration tests against `DATABASE_URL`, using a separate `passcode_test` database |
 | `npm run db:sync`           | Create collections and sync indexes with the Mongoose schemas                       |
 | `npm run rotate`            | Rotate the network password now (prints the outcome, never the password)            |
 | `npm run rotation:worker`   | Run the rotation scheduler as its own process                                       |

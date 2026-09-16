@@ -5,10 +5,10 @@ import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 // Always use a separate database so tests can never touch real data.
-process.env.DATABASE_NAME = "netguard_test";
+process.env.DATABASE_NAME = "passcode_test";
 // Tests supply their own key; the real one is never needed.
 const encryptionKey = randomBytes(32);
-process.env.NETGUARD_ENCRYPTION_KEY = encryptionKey.toString("base64");
+process.env.PASSCODE_ENCRYPTION_KEY = encryptionKey.toString("base64");
 
 const { connectDb, disconnectDb } = await import("@/lib/db/connection");
 const { allModels, AuditLog, RotationEvent, RotationSettings } = await import("@/lib/db/models");

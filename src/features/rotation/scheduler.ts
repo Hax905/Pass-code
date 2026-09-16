@@ -86,6 +86,6 @@ export function startRotationScheduler({ logger = console as Logger } = {}): Sch
         logger.error("[rotation] Scheduler check failed:", error);
       }
     },
-    { name: "netguard-rotation", noOverlap: true },
+    { name: "passcode-rotation", noOverlap: true },
   );
 }

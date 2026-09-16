@@ -1,5 +1,5 @@
 # Styles Document — Technology & Architecture
-## Project: NetGuard — Automated Network Password Rotation & Access Assistant
+## Project: PassCode — Automated Network Password Rotation & Access Assistant
 
 **Version:** 1.0
 **Companion to:** PRD.md
@@ -65,7 +65,7 @@ This document answers the PRD's open questions with concrete defaults so develop
 - **Designed for extension:** Auth.js's provider model means Google/Microsoft SSO can be added later as an additional provider without restructuring the auth system.
 
 ### 2.5 Secrets & Sensitive Data
-- **Current network password:** stored encrypted at rest (e.g., via a KMS-backed encryption key or, for v1, an application-level encryption key stored outside the repo/env-committed files). v1: AES-256-GCM with `NETGUARD_ENCRYPTION_KEY` (`src/lib/crypto/secret-box.ts`), stored in `rotation_events.passwordCiphertext`.
+- **Current network password:** stored encrypted at rest (e.g., via a KMS-backed encryption key or, for v1, an application-level encryption key stored outside the repo/env-committed files). v1: AES-256-GCM with `PASSCODE_ENCRYPTION_KEY` (`src/lib/crypto/secret-box.ts`), stored in `rotation_events.passwordCiphertext`.
 - **Environment/config secrets:** `.env` (never committed), documented in `.env.example`
 
 ### 2.6 Chatbot / AI Layer

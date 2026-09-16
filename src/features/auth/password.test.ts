@@ -39,6 +39,6 @@ describe("password hashing", () => {
   });
 
   it("never matches when checking against the dummy hash", async () => {
-    await expect(verifyAgainstDummy("netguard-dummy-password")).resolves.toBe(false);
+    await expect(verifyAgainstDummy("passcode-dummy-password")).resolves.toBe(false);
   });
 });

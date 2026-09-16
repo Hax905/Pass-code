@@ -28,9 +28,9 @@ jobs:
     name: Database integration (docker-compose MongoDB)
     runs-on: ubuntu-latest
     env:
-      MONGO_ROOT_USERNAME: netguard
-      MONGO_ROOT_PASSWORD: netguard-ci-only
-      DATABASE_URL: mongodb://netguard:netguard-ci-only@127.0.0.1:27017/?authSource=admin&directConnection=true
+      MONGO_ROOT_USERNAME: passcode
+      MONGO_ROOT_PASSWORD: passcode-ci-only
+      DATABASE_URL: mongodb://passcode:passcode-ci-only@127.0.0.1:27017/?authSource=admin&directConnection=true
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5

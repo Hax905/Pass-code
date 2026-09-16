@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 
 import { getServerEnv } from "@/lib/env";
 
-export const DEFAULT_DATABASE_NAME = "netguard";
+export const DEFAULT_DATABASE_NAME = "passcode";
 
 const globalForMongoose = globalThis as unknown as {
   mongooseConnection?: Promise<typeof mongoose>;

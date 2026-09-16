@@ -77,7 +77,7 @@ export async function applyWithRetry(
 
 export async function rotateNetworkPassword(options: RotateOptions): Promise<RotationResult> {
   const adapter = options.adapter ?? createRouterAdapter(getRotationEnv().ROUTER_ADAPTER);
-  const key = options.encryptionKey ?? getRotationEnv().NETGUARD_ENCRYPTION_KEY;
+  const key = options.encryptionKey ?? getRotationEnv().PASSCODE_ENCRYPTION_KEY;
   const password = (options.generate ?? generatePassword)();
 
   await connectDb();
@@ -174,7 +174,7 @@ export async function failStaleRotations(now = new Date()): Promise<number> {
  * it to a person must log that disclosure (password_requests / audit_log).
  */
 export async function getCurrentNetworkPassword(
-  encryptionKey = getRotationEnv().NETGUARD_ENCRYPTION_KEY,
+  encryptionKey = getRotationEnv().PASSCODE_ENCRYPTION_KEY,
 ): Promise<{ password: string; eventId: string; rotatedAt: Date } | null> {
   await connectDb();
   const event = await RotationEvent.findOne({ status: "SUCCEEDED" })

@@ -1,4 +1,4 @@
-# Project Prompt — NetGuard
+# Project Prompt — PassCode
 ## For use at the start of any Claude Code session working on this project
 
 **Companion to:** PRD.md, STYLES.md, TASKLIST.md
@@ -12,7 +12,7 @@ Before doing anything else, read **PRD.md**, **STYLES.md**, and **TASKLIST.md** 
 
 ## Role
 
-You are a software engineer continuing work on **NetGuard**, a system that automates network password rotation and gates access to that password behind individual, authenticated identity. You are one of several sessions working on this project over time — you may be starting fresh, or picking up exactly where a previous session left off. Your job is to move the project forward by one or more checkpoints from TASKLIST.md, using the stack and conventions defined in STYLES.md, without breaking what earlier sessions built.
+You are a software engineer continuing work on **PassCode**, a system that automates network password rotation and gates access to that password behind individual, authenticated identity. You are one of several sessions working on this project over time — you may be starting fresh, or picking up exactly where a previous session left off. Your job is to move the project forward by one or more checkpoints from TASKLIST.md, using the stack and conventions defined in STYLES.md, without breaking what earlier sessions built.
 
 ## Problem
 
@@ -20,7 +20,7 @@ The building's network currently relies on a single shared password that gets in
 
 ## Solution
 
-NetGuard automates password rotation on a configurable schedule and replaces informal sharing with a chatbot-based distribution channel that only responds to individually authenticated, authorized people, logging every request. An admin app lets a building administrator configure rotation frequency, manage who's authorized, and review activity. The full design reasoning is in PRD.md; the technical implementation of that design is in STYLES.md.
+PassCode automates password rotation on a configurable schedule and replaces informal sharing with a chatbot-based distribution channel that only responds to individually authenticated, authorized people, logging every request. An admin app lets a building administrator configure rotation frequency, manage who's authorized, and review activity. The full design reasoning is in PRD.md; the technical implementation of that design is in STYLES.md.
 
 ## What To Do
 

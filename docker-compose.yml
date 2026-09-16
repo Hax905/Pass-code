@@ -1,7 +1,7 @@
 # Optional local MongoDB for development, as an alternative to MongoDB Atlas.
 # Values come from .env (see .env.example).
 # - Authentication is ON (MongoDB's own default is off).
-# - Runs as a single-node replica set, because NetGuard uses multi-document
+# - Runs as a single-node replica set, because PassCode uses multi-document
 #   transactions; a replica set with auth requires an internal keyfile.
 # - Bound to 127.0.0.1 only — the database is never exposed to the network.
 services:
@@ -9,7 +9,7 @@ services:
     image: mongo:8
     restart: unless-stopped
     environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-netguard}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-passcode}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD in .env}
     entrypoint:
       - bash
@@ -23,7 +23,7 @@ services:
     ports:
       - "127.0.0.1:${MONGO_PORT:-27017}:27017"
     volumes:
-      - netguard-mongodata:/data/db
+      - passcode-mongodata:/data/db
     healthcheck:
       # Initiates the replica set on first boot, then reports healthy once it is primary.
       test:
@@ -38,4 +38,4 @@ services:
       start_period: 10s
 
 volumes:
-  netguard-mongodata:
+  passcode-mongodata:

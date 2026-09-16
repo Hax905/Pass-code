@@ -1,5 +1,5 @@
 # Product Requirements Document (PRD)
-## Project: NetGuard — Automated Network Password Rotation & Access Assistant
+## Project: PassCode — Automated Network Password Rotation & Access Assistant
 
 **Version:** 1.0
 **Status:** Draft for implementation planning

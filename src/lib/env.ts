@@ -6,7 +6,7 @@ export const serverEnvSchema = z.object({
   DATABASE_URL: z
     .string()
     .regex(/^mongodb(\+srv)?:\/\//, "DATABASE_URL must be a mongodb:// or mongodb+srv:// URI"),
-  // Overrides the database named in DATABASE_URL (defaults to "netguard").
+  // Overrides the database named in DATABASE_URL (defaults to "passcode").
   DATABASE_NAME: z.string().min(1).optional(),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
@@ -18,11 +18,11 @@ export const ROUTER_ADAPTERS = ["mock"] as const;
 // Phase 1 — rotation engine. Validated separately so code that only needs the
 // database doesn't require the encryption key.
 export const rotationEnvSchema = z.object({
-  NETGUARD_ENCRYPTION_KEY: z
-    .string({ error: "NETGUARD_ENCRYPTION_KEY is required" })
+  PASSCODE_ENCRYPTION_KEY: z
+    .string({ error: "PASSCODE_ENCRYPTION_KEY is required" })
     .refine(
       (value) => Buffer.from(value, "base64").length === 32,
-      "NETGUARD_ENCRYPTION_KEY must be 32 bytes, base64-encoded",
+      "PASSCODE_ENCRYPTION_KEY must be 32 bytes, base64-encoded",
     )
     .transform((value) => Buffer.from(value, "base64")),
   ROUTER_ADAPTER: z.enum(ROUTER_ADAPTERS).default("mock"),

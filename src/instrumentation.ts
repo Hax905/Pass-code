@@ -9,6 +9,6 @@ export async function register() {
   getRotationEnv(); // fail fast on a missing/invalid encryption key
 
   // Survive dev hot reloads without starting a second scheduler.
-  const globalForScheduler = globalThis as { netguardRotationScheduler?: unknown };
-  globalForScheduler.netguardRotationScheduler ??= startRotationScheduler();
+  const globalForScheduler = globalThis as { passcodeRotationScheduler?: unknown };
+  globalForScheduler.passcodeRotationScheduler ??= startRotationScheduler();
 }

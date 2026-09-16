@@ -34,7 +34,7 @@ let dummyHash: Promise<string> | undefined;
  * so response times don't reveal which emails are registered.
  */
 export async function verifyAgainstDummy(password: string): Promise<false> {
-  dummyHash ??= bcrypt.hash("netguard-dummy-password", BCRYPT_ROUNDS);
+  dummyHash ??= bcrypt.hash("passcode-dummy-password", BCRYPT_ROUNDS);
   await bcrypt.compare(password, await dummyHash);
   return false;
 }

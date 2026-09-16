@@ -1,6 +1,6 @@
 // Creates an ACTIVE admin account, e.g. the first one.
 //   npm run user:create-admin -- --email admin@example.com [--name "Jane Admin"]
-// The password is read from a hidden prompt, or from NETGUARD_ADMIN_PASSWORD
+// The password is read from a hidden prompt, or from PASSCODE_ADMIN_PASSWORD
 // for non-interactive use. It is never accepted as a command-line argument,
 // which would leave it in shell history.
 import "dotenv/config";
@@ -41,7 +41,7 @@ async function main() {
     return;
   }
 
-  let password = process.env.NETGUARD_ADMIN_PASSWORD;
+  let password = process.env.PASSCODE_ADMIN_PASSWORD;
   if (!password) {
     password = await promptHidden("Password (min. 12 characters): ");
     if (password !== (await promptHidden("Repeat password: "))) {

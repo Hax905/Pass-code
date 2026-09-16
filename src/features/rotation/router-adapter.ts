@@ -1,5 +1,5 @@
-// Boundary between NetGuard and the network hardware (STYLES.md §1).
-// Password rotation is the only hardware capability NetGuard may use: do not
+// Boundary between PassCode and the network hardware (STYLES.md §1).
+// Password rotation is the only hardware capability PassCode may use: do not
 // add firmware, port, traffic or other device operations here (PROMPT.md).
 import type { ROUTER_ADAPTERS } from "@/lib/env";
 

@@ -1,4 +1,4 @@
-// NetGuard data model — see STYLES.md §2.3 (pivoted to MongoDB, see TASKLIST.md Phase 0 log).
+// PassCode data model — see STYLES.md §2.3 (pivoted to MongoDB, see TASKLIST.md Phase 0 log).
 // Collection names match the table names STYLES.md defines.
 import mongoose, { Schema, type InferSchemaType, type Model } from "mongoose";
 

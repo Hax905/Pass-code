@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "NetGuard",
+  title: "PassCode",
   description: "Automated network password rotation and gated access",
 };
 

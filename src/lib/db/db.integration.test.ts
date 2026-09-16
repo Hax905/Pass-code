@@ -4,7 +4,7 @@ import mongoose from "mongoose";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // Always use a separate database so tests can never touch real data.
-process.env.DATABASE_NAME = "netguard_test";
+process.env.DATABASE_NAME = "passcode_test";
 
 const { connectDb, disconnectDb } = await import("@/lib/db/connection");
 const { allModels, AuditLog, User } = await import("@/lib/db/models");
@@ -26,7 +26,7 @@ describe("database (integration)", () => {
 
   it("connects to the isolated test database", async () => {
     const { connection } = await connectDb();
-    expect(connection.name).toBe("netguard_test");
+    expect(connection.name).toBe("passcode_test");
     const ping = await connection.db!.admin().ping();
     expect(ping.ok).toBe(1);
   });
