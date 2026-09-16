@@ -44,12 +44,14 @@ userSchema.index({ email: 1 }, { unique: true });
 const rotationEventSchema = new Schema(
   {
     trigger: { type: String, enum: ROTATION_TRIGGERS, required: true },
-    // Set when trigger = MANUAL; absent for scheduled rotations.
+    // Admin who started a MANUAL rotation; absent for scheduled and CLI rotations.
     triggeredBy: { type: Schema.Types.ObjectId, ref: "User" },
     status: { type: String, enum: ROTATION_STATUSES, required: true, default: "PENDING" },
     attempts: { type: Number, required: true, default: 0, min: 0 },
     adapter: { type: String, required: true }, // RouterAdapter implementation, e.g. "mock"
     errorMessage: { type: String },
+    // Set on success: true when someone must still enter the password on the device.
+    manualApplicationRequired: { type: Boolean },
     // Application-level encrypted network password (never plaintext, never a
     // hash — the chatbot must be able to decrypt it for authorized users).
     passwordCiphertext: { type: String, select: false },
@@ -59,6 +61,11 @@ const rotationEventSchema = new Schema(
 );
 rotationEventSchema.index({ createdAt: -1 });
 rotationEventSchema.index({ status: 1, createdAt: -1 });
+// At most one rotation in progress at a time, across processes.
+rotationEventSchema.index(
+  { status: 1 },
+  { unique: true, partialFilterExpression: { status: "PENDING" }, name: "one_pending_rotation" },
+);
 
 const passwordRequestSchema = new Schema(
   {

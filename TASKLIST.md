@@ -56,20 +56,30 @@ This file is the shared memory between Claude Code sessions. A session may pick 
 ## Phase 1 — Rotation Engine
 *Goal: password rotation works end-to-end, independently of any UI.*
 
-- [ ] Implement password generator (strong, configurable length/character set)
-- [ ] Implement `RouterAdapter` interface per STYLES.md §1
-- [ ] Implement `MockRouterAdapter` (v1 default): "applies" the password by storing it for admin manual application
-- [ ] Implement rotation scheduler using node-cron, reading frequency/window from `rotation_settings`
-- [ ] Implement rotation execution: generate → apply via adapter → store encrypted → log to `rotation_events`
-- [ ] Implement manual "rotate now" function (callable independent of schedule)
-- [ ] Implement rotation failure handling (retry once, then mark `rotation_events.status = failed`, no silent failure)
-- [ ] Write unit tests: generator, scheduler logic, mock adapter, failure path
-- [ ] CLI or internal script to trigger a rotation manually, for testing without a UI
+- [x] Implement password generator (strong, configurable length/character set)
+- [x] Implement `RouterAdapter` interface per STYLES.md §1
+- [x] Implement `MockRouterAdapter` (v1 default): "applies" the password by storing it for admin manual application
+- [x] Implement rotation scheduler using node-cron, reading frequency/window from `rotation_settings` — *a 1-minute tick evaluates the settings (see pivot)*
+- [x] Implement rotation execution: generate → store encrypted → apply via adapter → log to `rotation_events` — *store now happens before apply (see pivot)*
+- [x] Implement manual "rotate now" function (callable independent of schedule)
+- [x] Implement rotation failure handling (retry once, then mark `rotation_events.status = failed`, no silent failure)
+- [x] Write unit tests: generator, scheduler logic, mock adapter, failure path
+- [x] CLI or internal script to trigger a rotation manually, for testing without a UI
 
 **Checkpoint definition of done:** Running the manual rotation trigger produces a new encrypted password, a `rotation_events` row, and is independently testable without any frontend code existing yet.
 
 **Session Log:**
-- _(empty)_
+- [2026-09-16] [Completed] Password generator (CSPRNG, 12–63 chars, default 20, every enabled class present, look-alike characters and awkward symbols excluded) — `src/features/rotation/password-generator.ts`
+- [2026-09-16] [Completed] AES-256-GCM encryption at rest (`v1:iv:tag:ciphertext`, tamper-evident); `getRotationEnv()` validates `NETGUARD_ENCRYPTION_KEY` (32 bytes, base64), `ROUTER_ADAPTER`, `ROTATION_SCHEDULER_ENABLED` — `src/lib/crypto/secret-box.ts`, `src/lib/env.ts`, `.env.example`
+- [2026-09-16] [Completed] `RouterAdapter` interface (`applyPassword` → `{ manualApplicationRequired }`; error messages must not contain the password) + `createRouterAdapter`; `MockRouterAdapter` keeps only a SHA-256 fingerprint in memory and can simulate failures — `src/features/rotation/router-adapter.ts`, `mock-router-adapter.ts`
+- [2026-09-16] [Completed] Rotation execution + manual "rotate now": `rotateNetworkPassword()` (2 attempts, 30 s timeout per attempt, password redacted from error messages, outcome + `audit_log` entry written in one transaction), `getCurrentNetworkPassword()` (latest SUCCEEDED only; callers must log the disclosure), `failStaleRotations()` (PENDING > 10 min → FAILED) — `src/features/rotation/rotation-service.ts`
+- [2026-09-16] [Completed] Scheduler: `runScheduledRotationCheck()` + `startRotationScheduler()` (node-cron, every minute, `noOverlap`); interval in hours/days/weeks, optional local-time window (may wrap midnight), 30 min back-off after a failure; does nothing until a `rotation_settings` document exists. Runs in-app via `src/instrumentation.ts` when `ROTATION_SCHEDULER_ENABLED=true`, or standalone with `npm run rotation:worker` — `src/features/rotation/schedule.ts`, `scheduler.ts`, `src/instrumentation.ts`, `scripts/rotation-worker.ts`
+- [2026-09-16] [Completed] CLI `npm run rotate` (prints the outcome, never the password; exit code 1 on failure) — `scripts/rotate.ts`, `package.json`
+- [2026-09-16] [Completed] Tests: unit (generator, encryption, schedule/window logic, mock adapter, retry/timeout/redaction, env), 46 passing; integration (success, retry, failure keeps previous password current, concurrent rotation refused, stale cleanup, scheduler not-configured/due/not-yet-due/disabled/back-off), 13 passing — `src/features/rotation/*.test.ts`, `src/lib/crypto/secret-box.test.ts`, `src/lib/env.test.ts`
+- [2026-09-16] [Pivot] **The encrypted password is stored before it is applied** (task originally said generate → apply → store). If the process dies after the router accepted a password, the password is still recoverable from the (then FAILED) event. Only SUCCEEDED events count as the current password. Affects Phase 3 (a FAILED event may hold a password that reached the router) and Phase 5 (hardware-unreachable edge case) — `src/features/rotation/rotation-service.ts`
+- [2026-09-16] [Pivot] **The scheduler is a 1-minute tick, not one cron expression per interval** (cron cannot express "every N weeks"). Nothing rotates until rotation settings are saved, so Phase 3's settings save is what starts scheduled rotation. Only one rotation can be PENDING at a time (partial unique index `one_pending_rotation` → `RotationInProgressError`), which also covers several app instances. Run `npm run db:sync` after pulling — `src/features/rotation/scheduler.ts`, `src/lib/db/models.ts`
+- [2026-09-16] [Pivot] `rotation_events` gained `manualApplicationRequired`; `triggeredBy` is absent for scheduled and CLI rotations (the CLI is recorded as `metadata.source = "cli"` in `audit_log`). Phase 3's "rotate now" button should pass `triggeredBy` (the admin's id) and a `source` such as `"admin-ui"` — `src/lib/db/models.ts`
+- [2026-09-16] [Completed] **Phase 1 checkpoint met.** `npm run rotate` against `netguard_test` produced a SUCCEEDED `rotation_events` row with a `v1:` ciphertext and a `rotation.succeeded` audit entry (test data removed afterwards); `db:sync` added the new index to `passcode`; lint, format, typecheck, unit tests, integration tests and build pass; `next start` boots with the in-app scheduler enabled. Network hardware is still unconfirmed, so v1 stays on the mock adapter — `.env` (local only: encryption key added)
 
 ---
 

@@ -1,6 +1,8 @@
+import { randomBytes } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
-import { getServerEnv } from "@/lib/env";
+import { getRotationEnv, getServerEnv } from "@/lib/env";
 
 describe("getServerEnv", () => {
   it("accepts mongodb:// and mongodb+srv:// URIs", () => {
@@ -25,5 +27,32 @@ describe("getServerEnv", () => {
     expect(() =>
       getServerEnv({ DATABASE_URL: "https://user:hunter2@example.com", NODE_ENV: "test" }),
     ).toThrow(expect.objectContaining({ message: expect.not.stringContaining("hunter2") }));
+  });
+});
+
+describe("getRotationEnv", () => {
+  const key = randomBytes(32).toString("base64");
+
+  it("decodes the encryption key and applies defaults", () => {
+    const env = getRotationEnv({ NETGUARD_ENCRYPTION_KEY: key, NODE_ENV: "test" });
+    expect(env.NETGUARD_ENCRYPTION_KEY).toHaveLength(32);
+    expect(env.ROUTER_ADAPTER).toBe("mock");
+    expect(env.ROTATION_SCHEDULER_ENABLED).toBe(false);
+  });
+
+  it("requires a 32-byte key", () => {
+    expect(() => getRotationEnv({ NODE_ENV: "test" })).toThrow(/NETGUARD_ENCRYPTION_KEY/);
+    expect(() =>
+      getRotationEnv({
+        NETGUARD_ENCRYPTION_KEY: randomBytes(16).toString("base64"),
+        NODE_ENV: "test",
+      }),
+    ).toThrow(/32 bytes/);
+  });
+
+  it("rejects unknown router adapters without echoing the key", () => {
+    expect(() =>
+      getRotationEnv({ NETGUARD_ENCRYPTION_KEY: key, ROUTER_ADAPTER: "cisco", NODE_ENV: "test" }),
+    ).toThrow(expect.objectContaining({ message: expect.not.stringContaining(key) }));
   });
 });

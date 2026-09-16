@@ -38,7 +38,7 @@ This document answers the PRD's open questions with concrete defaults so develop
 ### 2.2 Backend
 - **Runtime:** Node.js (TypeScript) via Next.js API routes / Route Handlers
 - **Validation:** Zod for request/response schema validation
-- **Job scheduling (password rotation):** node-cron for scheduled rotation triggers, wrapped in a service that can later move to a dedicated worker/queue if reliability requirements grow
+- **Job scheduling (password rotation):** node-cron for scheduled rotation triggers, wrapped in a service that can later move to a dedicated worker/queue if reliability requirements grow. A 1-minute tick checks `rotation_settings` and rotates when due (cron expressions cannot express "every N weeks"). It runs inside the Next.js server (`src/instrumentation.ts`, `ROTATION_SCHEDULER_ENABLED=true`) or as its own process (`npm run rotation:worker`) on serverless hosts. A partial unique index allows only one rotation in progress at a time.
 - **Rationale:** Keeping backend logic in TypeScript alongside the frontend avoids context-switching across languages and keeps the "single app" decision consistent end-to-end.
 
 ### 2.3 Database
@@ -63,7 +63,7 @@ This document answers the PRD's open questions with concrete defaults so develop
 - **Designed for extension:** Auth.js's provider model means Google/Microsoft SSO can be added later as an additional provider without restructuring the auth system.
 
 ### 2.5 Secrets & Sensitive Data
-- **Current network password:** stored encrypted at rest (e.g., via a KMS-backed encryption key or, for v1, an application-level encryption key stored outside the repo/env-committed files)
+- **Current network password:** stored encrypted at rest (e.g., via a KMS-backed encryption key or, for v1, an application-level encryption key stored outside the repo/env-committed files). v1: AES-256-GCM with `NETGUARD_ENCRYPTION_KEY` (`src/lib/crypto/secret-box.ts`), stored in `rotation_events.passwordCiphertext`.
 - **Environment/config secrets:** `.env` (never committed), documented in `.env.example`
 
 ### 2.6 Chatbot / AI Layer
