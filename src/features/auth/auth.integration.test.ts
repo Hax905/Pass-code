@@ -1,9 +1,6 @@
-import "dotenv/config";
+import "@/test/integration-db";
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-
-// Always use a separate database so tests can never touch real data.
-process.env.DATABASE_NAME = "passcode_test";
 
 const { connectDb, disconnectDb } = await import("@/lib/db/connection");
 const { allModels, AuditLog, User } = await import("@/lib/db/models");

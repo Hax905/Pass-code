@@ -1,11 +1,9 @@
-import "dotenv/config";
+import "@/test/integration-db";
 
 import { randomBytes } from "node:crypto";
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-// Always use a separate database so tests can never touch real data.
-process.env.DATABASE_NAME = "passcode_test";
 // Tests supply their own key; the real one is never needed.
 const encryptionKey = randomBytes(32);
 process.env.PASSCODE_ENCRYPTION_KEY = encryptionKey.toString("base64");
@@ -45,7 +43,7 @@ describe("rotation engine (integration)", () => {
     const result = await rotateNetworkPassword({ trigger: "MANUAL", source: "test", adapter });
 
     expect(result).toMatchObject({ status: "SUCCEEDED", attempts: 1 });
-    expect(result.manualApplicationRequired).toBe(true);
+    expect(result.manualApplicationRequired).toBe(false);
 
     const event = await RotationEvent.findById(result.eventId).select("+passwordCiphertext").lean();
     expect(event).toMatchObject({
@@ -53,7 +51,7 @@ describe("rotation engine (integration)", () => {
       status: "SUCCEEDED",
       adapter: "mock",
       attempts: 1,
-      manualApplicationRequired: true,
+      manualApplicationRequired: false,
     });
     expect(event?.completedAt).toBeInstanceOf(Date);
     expect(event?.passwordCiphertext).toMatch(/^v1:/);
@@ -94,13 +92,13 @@ describe("rotation engine (integration)", () => {
       eventId: expect.any(String),
       status: "FAILED",
       attempts: 2,
-      errorMessage: "Mock router: simulated failure",
+      errorMessage: "Virtual router: simulated failure",
     });
     expect(adapter.calls).toBe(2);
     expect(await RotationEvent.findById(result.eventId).lean()).toMatchObject({
       status: "FAILED",
       attempts: 2,
-      errorMessage: "Mock router: simulated failure",
+      errorMessage: "Virtual router: simulated failure",
     });
     expect(await AuditLog.countDocuments({ action: "rotation.failed" })).toBe(1);
     expect(await getCurrentNetworkPassword(encryptionKey)).toEqual(before);

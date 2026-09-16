@@ -91,8 +91,8 @@ export function RevealPassword() {
           <AlertDialogHeader>
             <AlertDialogTitle>Reveal the network password?</AlertDialogTitle>
             <AlertDialogDescription>
-              This is recorded in the audit log with your name. Only reveal it to enter it on the
-              router or to help someone who is authorized.
+              This is recorded in the audit log with your name. Only reveal it to help someone who
+              is authorized.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -1,12 +1,10 @@
-import "dotenv/config";
+import "@/test/integration-db";
 
 import { randomBytes } from "node:crypto";
 
 import mongoose from "mongoose";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-// Always use a separate database so tests can never touch real data.
-process.env.DATABASE_NAME = "passcode_test";
 process.env.PASSCODE_ENCRYPTION_KEY = randomBytes(32).toString("base64");
 
 const { connectDb, disconnectDb } = await import("@/lib/db/connection");
@@ -181,10 +179,10 @@ describe("admin app services (integration)", () => {
       expect(events[0]).toMatchObject({
         status: "FAILED",
         attempts: 2,
-        errorMessage: "Mock router: simulated failure",
+        errorMessage: "Virtual router: simulated failure",
         triggeredBy: { id: admin.id, email: "admin@example.com" },
       });
-      expect(events[1]).toMatchObject({ status: "SUCCEEDED", manualApplicationRequired: true });
+      expect(events[1]).toMatchObject({ status: "SUCCEEDED", manualApplicationRequired: false });
       expect(JSON.stringify(events)).not.toMatch(/ciphertext|v1:/i);
     });
   });
@@ -309,7 +307,6 @@ describe("admin app services (integration)", () => {
         "Unusually many password requests",
         "Many denied password requests",
         "Many failed sign-ins",
-        "Apply the current password on the router",
         "1 account waiting for approval",
       ]);
       expect(anomalies[1].detail).toContain("heavy@example.com");
@@ -334,9 +331,7 @@ describe("admin app services (integration)", () => {
       await rotate({ fail: true });
       await RotationEvent.collection.updateMany({}, { $set: { createdAt: twoDaysAgo } });
       await rotate();
-      expect((await getAnomalies()).map((a) => a.title)).toEqual([
-        "Apply the current password on the router",
-      ]);
+      await expect(getAnomalies()).resolves.toEqual([]);
     });
   });
 });

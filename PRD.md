@@ -36,6 +36,7 @@ The fix is not just "rotate passwords more often" — rotation alone just shorte
 
 - Replacing enterprise-grade solutions like 802.1X / RADIUS with per-user credentials (this system manages a **shared** password's lifecycle, it does not eliminate the shared-password model itself — see Open Questions).
 - Physical network hardware management (VLANs, firmware, port config) beyond triggering a password change via router/AP API.
+- **Integration with physical routers or access points.** *Decided 2026-09-16:* to avoid bloat and save time, PassCode works only with a built-in virtual (mock) router, in v1 and in the finished product.
 - Building a full IT ticketing or helpdesk system — the chatbot handles a bounded set of security Q&A, not general IT support.
 - Guest network management (unless explicitly requested later).
 
@@ -50,7 +51,7 @@ The fix is not just "rotate passwords more often" — rotation alone just shorte
 ### 6.1 Password Rotation Engine
 - Generates a new strong network password on a schedule.
 - Schedule is configurable (e.g., every N hours/days/weeks) via the admin app.
-- Pushes the new password to the network hardware (router/AP) via API/integration.
+- Applies the new password to the router through the RouterAdapter. The finished product uses a virtual (mock) router, which applies it immediately.
 - Supports a manual "rotate now" override for admins (e.g., after a suspected leak).
 - Keeps a rotation history (timestamp, triggered-by, success/failure) for audit purposes.
 - Handles rotation failure gracefully (retry logic, admin alert, does not silently fail).
@@ -84,7 +85,7 @@ The fix is not just "rotate passwords more often" — rotation alone just shorte
 Admin logs into app → sets rotation frequency/window → saves → engine schedules next rotation → admin sees confirmation and next rotation time.
 
 **Flow B — Scheduled rotation**
-Engine triggers at scheduled time → generates new password → pushes to network hardware → confirms success → logs event → (optionally) notifies authorized users that a new password is available.
+Engine triggers at scheduled time → generates new password → applies it to the virtual router → confirms success → logs event → (optionally) notifies authorized users that a new password is available.
 
 **Flow C — User requests password**
 User opens app → authenticates → opens chatbot → asks for password → bot verifies authorization → bot returns password → event logged with identity + timestamp.
@@ -116,7 +117,7 @@ Admin notices anomaly (e.g., spike in device count or password requests) → tri
 
 *(Full technology choices belong in the companion Styles document — this section only captures constraints that shape scope.)*
 
-- Requires some form of programmatic access to the network hardware (router/access point) to push password changes — this must be confirmed/scoped before implementation begins, as it varies by hardware vendor.
+- ~~Requires programmatic access to the network hardware to push password changes.~~ Resolved 2026-09-16: no physical hardware is supported; PassCode ships with a virtual (mock) router.
 - Requires a persistent store for: rotation history, authorized-user list, and chatbot request logs.
 - Requires an authentication mechanism (see §6.4) — assumed to be decided before development starts, since it affects the data model.
 - Assumes the app has both an admin-facing surface and an end-user-facing surface (could be one app with role-based views, or two separate apps — to be decided in styles/architecture doc).
@@ -140,7 +141,7 @@ Each phase below is designed to be a **self-contained, non-overlapping checkpoin
 | Risk | Mitigation |
 |---|---|
 | Chatbot becomes new sharing vector | Per-person auth + rate limiting + request logging (§6.4, §8) |
-| Hardware API doesn't support programmatic password changes | Validate hardware capability in Phase 1 before building on top of it; fall back to a semi-automated flow (system prepares password, notifies admin to apply it) if needed |
+| Hardware API doesn't support programmatic password changes | Removed from scope (2026-09-16): PassCode only uses a virtual (mock) router |
 | Rotation breaks connectivity for legitimate users mid-work | Configurable rotation windows (§6.1); advance notice to authorized users |
 | Authorized list goes stale (ex-employees still listed) | Explicit offboarding process (§8) and periodic admin review reminders |
 | Admin app itself becomes a single point of compromise | Strong admin auth (ideally separate/stronger than regular user auth), audit logging of admin actions |
@@ -148,7 +149,7 @@ Each phase below is designed to be a **self-contained, non-overlapping checkpoin
 ## 13. Open Questions (to resolve before/during Phase 0–2)
 
 1. What authentication method for end users — SSO, per-person invite codes, or admin-provisioned accounts?
-2. What network hardware/vendor is in use, and does it expose an API for password changes?
+2. What network hardware/vendor is in use, and does it expose an API for password changes? — *Decided 2026-09-16: none; PassCode uses a virtual (mock) router only.*
 3. Should the raw password ever be visible to admins in the UI, or only to the chatbot flow with full logging?
 4. Is there an existing employee/occupant directory to integrate with for authorization, or does this need to be built from scratch?
 5. Single app with role-based views (admin vs. user) or two separate apps?

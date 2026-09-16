@@ -58,7 +58,7 @@ This file is the shared memory between Claude Code sessions. A session may pick 
 
 - [x] Implement password generator (strong, configurable length/character set)
 - [x] Implement `RouterAdapter` interface per STYLES.md §1
-- [x] Implement `MockRouterAdapter` (v1 default): "applies" the password by storing it for admin manual application
+- [x] Implement `MockRouterAdapter` (v1 default): "applies" the password by storing it for admin manual application — *now the virtual router, which applies it immediately (see 2026-09-16 pivot)*
 - [x] Implement rotation scheduler using node-cron, reading frequency/window from `rotation_settings` — *a 1-minute tick evaluates the settings (see pivot)*
 - [x] Implement rotation execution: generate → store encrypted → apply via adapter → log to `rotation_events` — *store now happens before apply (see pivot)*
 - [x] Implement manual "rotate now" function (callable independent of schedule)
@@ -137,6 +137,8 @@ This file is the shared memory between Claude Code sessions. A session may pick 
 - [2026-09-16] [Pivot] **Admin UI uses Server Components for reads and Server Actions for changes, not React Query** (STYLES.md §2.1). Each action re-renders the page with fresh data in the same round trip, so no client-side cache is needed, and all authorization stays on the server. React Query remains available for Phase 4's chat UI if it needs client-side state — `src/app/admin/actions.ts`, `STYLES.md`
 - [2026-09-16] [Pivot] shadcn/ui components added: alert, alert-dialog, badge, card, dialog, input, label, native-select, separator, table (base-nova style, built on Base UI: use the `render` prop instead of `asChild`) — `src/components/ui/`
 - [2026-09-16] [Completed] **Phase 3 checkpoint met.** The project owner tested the admin UI in a browser against sample data on `next start` (`passcode_test`, scheduler on): requested an account, had it approved and promoted to admin (which ended the old session as designed), and confirmed the admin app works
+- [2026-09-16] [Pivot] **Virtual router only.** At the project owner's request (avoid bloat, save time), PassCode will never support physical routers. `MockRouterAdapter` is now the virtual router: it applies each password immediately (`manualApplicationRequired: false`, error text "Virtual router: …"). Removed the dashboard alert about entering the password on the router, and the history now says "Applied to the virtual router". The `manualApplicationRequired` field stays for existing records. PRD, STYLES, README, `.env.example` updated; the Global Open Items hardware question is closed — `src/features/rotation/mock-router-adapter.ts`, `src/features/admin/activity.ts`, `src/app/admin/rotation/page.tsx`, `src/features/admin/components/reveal-password.tsx`
+- [2026-09-16] [Completed] Database health check on the project owner's Atlas cluster: replica set `atlas-149hwp-shard-0` (3 hosts, writable primary, MongoDB 8.0.32, AWS us-east-1), transactions supported, round trips 67–164 ms; `passcode` has all 5 collections with indexes matching the schemas (no data yet, no admin yet). Integration tests now share `src/test/integration-db.ts`, which reads `TEST_DATABASE_NAME` (default `passcode_test`) and refuses names that don't end in `_test` — `src/test/integration-db.ts`, `src/**/*.integration.test.ts`, `README.md`
 
 ---
 
@@ -166,7 +168,7 @@ This file is the shared memory between Claude Code sessions. A session may pick 
 - [ ] Alerting: admin notification (in-app, per STYLES.md §1) on rotation failure or anomaly
 - [ ] Audit log integrity check (append-only pattern, no update/delete on `audit_log` rows)
 - [ ] Offboarding flow: confirm a revoked user immediately loses chatbot/app access (test explicitly, not just assumed from Phase 2)
-- [ ] Edge case: router/hardware unreachable during rotation — confirm failure path from Phase 1 surfaces correctly in admin UI
+- [ ] Edge case: virtual router failing during rotation (simulated with `MockRouterAdapter` failure options) — confirm failure path from Phase 1 surfaces correctly in admin UI
 - [ ] Edge case: rotation scheduled during an active admin edit to settings — confirm no race condition
 - [ ] Load-test the rate limiter with concurrent requests
 
@@ -185,7 +187,7 @@ This file is the shared memory between Claude Code sessions. A session may pick 
 - [ ] Finalize database hosting and run production migration
 - [ ] Write a short admin-facing README: how to configure rotation, add/remove users, read logs
 - [ ] Write a short user-facing help doc: how to log in and ask the chatbot for the password
-- [ ] Confirm the real `RouterAdapter` (non-mock) if hardware API access has been confirmed by this point — otherwise document that v1 ships with the mock adapter and manual application step
+- [ ] Document that PassCode ships with the virtual (mock) router only; no physical router support (decided 2026-09-16)
 
 **Checkpoint definition of done:** Deployed, documented, and every flow in PRD §7 has passed an end-to-end test against the deployed environment.
 
@@ -198,7 +200,7 @@ This file is the shared memory between Claude Code sessions. A session may pick 
 
 These aren't tasks yet because they need a decision first — check here before starting Phase 1 or Phase 2:
 
-- [ ] Confirm network hardware/vendor and whether it exposes a password-change API (affects Phase 1 and Phase 6's final item)
+- [x] Confirm network hardware/vendor and whether it exposes a password-change API — *decided 2026-09-16: no physical hardware; PassCode uses the virtual (mock) router only*
 - [ ] Confirm auth model: stay with email/password or move to SSO before Phase 2 starts (affects Phase 2's data model) — *Phase 2 was built on the email/password default (2026-09-16); SSO would be an additional Auth.js provider, and `passwordHash` is already optional*
 - [ ] Confirm whether admins should be able to view the raw current password, or only confirm rotation status (affects Phase 3)
 

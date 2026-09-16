@@ -94,11 +94,9 @@ export default async function RotationPage() {
                     <TableCell className="max-w-sm text-wrap text-muted-foreground">
                       {event.status === "FAILED"
                         ? event.errorMessage
-                        : event.manualApplicationRequired
-                          ? `Must be entered on the router by hand (${event.adapter} adapter)`
-                          : event.status === "SUCCEEDED"
-                            ? `Applied by the ${event.adapter} adapter`
-                            : "In progress"}
+                        : event.status === "SUCCEEDED"
+                          ? "Applied to the virtual router"
+                          : "In progress"}
                     </TableCell>
                   </TableRow>
                 ))}

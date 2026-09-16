@@ -5,10 +5,10 @@ import { applyWithRetry } from "./rotation-service";
 import { createRouterAdapter, type RouterAdapter } from "./router-adapter";
 
 describe("MockRouterAdapter", () => {
-  it("accepts the password and asks for manual application", async () => {
+  it("accepts the password like a router that applies it immediately", async () => {
     const adapter = new MockRouterAdapter();
     await expect(adapter.applyPassword("pw-1")).resolves.toEqual({
-      manualApplicationRequired: true,
+      manualApplicationRequired: false,
     });
     expect(adapter.calls).toBe(1);
     expect(adapter.lastAppliedFingerprint).toBe(fingerprint("pw-1"));
@@ -33,7 +33,7 @@ describe("applyWithRetry", () => {
     await expect(applyWithRetry(adapter, "pw", { retryDelayMs: 0 })).resolves.toEqual({
       ok: true,
       attempts: 1,
-      manualApplicationRequired: true,
+      manualApplicationRequired: false,
     });
   });
 
@@ -50,7 +50,7 @@ describe("applyWithRetry", () => {
     expect(outcome).toEqual({
       ok: false,
       attempts: 2,
-      errorMessage: "Mock router: simulated failure",
+      errorMessage: "Virtual router: simulated failure",
     });
     expect(adapter.calls).toBe(2);
   });

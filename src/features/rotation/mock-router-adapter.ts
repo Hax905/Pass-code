@@ -10,9 +10,9 @@ export interface MockRouterAdapterOptions {
 }
 
 /**
- * v1 default adapter: nothing is sent to hardware. The rotation service stores
- * the new password encrypted, and an admin applies it on the router by hand
- * (Phase 3 shows it to them), so every result requires manual application.
+ * The virtual router PassCode ships with (no physical hardware is supported).
+ * Applying a password succeeds immediately; the encrypted copy stored by the
+ * rotation service is the source of truth for the current password.
  */
 export class MockRouterAdapter implements RouterAdapter {
   readonly name = "mock" as const;
@@ -25,10 +25,10 @@ export class MockRouterAdapter implements RouterAdapter {
   async applyPassword(password: string): Promise<ApplyPasswordResult> {
     this.calls++;
     if (this.options.alwaysFail || this.calls <= (this.options.failFirst ?? 0)) {
-      throw new Error("Mock router: simulated failure");
+      throw new Error("Virtual router: simulated failure");
     }
     this.lastAppliedFingerprint = fingerprint(password);
-    return { manualApplicationRequired: true };
+    return { manualApplicationRequired: false };
   }
 }
 

@@ -19,8 +19,8 @@ This document answers the PRD's open questions with concrete defaults so develop
 |---|---|---|
 | Single app or two apps? | **Single web app, role-based views** (admin vs. user) | Simpler to build, deploy, and maintain in v1; shared auth system; role gate controls what's visible |
 | End-user authentication | **[ASSUMPTION] Email + password accounts, admin-provisioned or self-registered with admin approval**, with the model built so SSO (Google/Microsoft) can be added later without a rewrite | No existing directory confirmed; this is the lowest-dependency starting point |
-| Hardware integration | **[ASSUMPTION] Abstracted behind a "RouterAdapter" interface**, with a mock/manual adapter for Phase 1 (system prepares the password and shows it to the admin to apply) and a real adapter added once the router/AP's API is confirmed | Unblocks development without waiting on a hardware decision; swappable later |
-| Password visibility to admins | Admins **can** view the current password in the admin UI (marked as a sensitive action, logged) | Admins need it for support/manual application in the mock-adapter phase; this can be tightened later if a real hardware API removes the need |
+| Hardware integration | **Decided (2026-09-16): virtual router only.** Rotation goes through the "RouterAdapter" interface, and the only implementation is the virtual (mock) router (`ROUTER_ADAPTER=mock`), which applies each new password immediately. No physical routers are supported, in v1 or the finished product | Avoids bloat and saves time; the interface stays, so it isn't a dead end |
+| Password visibility to admins | Admins **can** view the current password in the admin UI (marked as a sensitive action, logged) | Admins need it to help authorized people; every view is audited |
 | Directory integration | None in v1 — authorized users are managed manually inside the app | No confirmed existing directory; avoids a hard dependency |
 | Notifications | **In-app only for v1** (a banner/notice when a new password is available); email as a fast-follow | Keeps v1 scope tight; avoids setting up email infra before the core loop works |
 
@@ -104,7 +104,7 @@ This document answers the PRD's open questions with concrete defaults so develop
 - A **single language and framework** (TypeScript/Next.js) means any session can pick up any phase without a context-switch cost.
 - **Feature-based folders** mean each PRD phase (rotation engine, auth, admin app, chatbot) maps to a folder a session can work in without touching other phases' code — reducing merge conflicts across sessions.
 - **Mongoose models + `db:sync`** give a single source of truth for the data model that every session reads from; CI runs integration tests against a fresh database so schema/index problems surface immediately.
-- **The RouterAdapter abstraction** means the hardware-integration risk flagged in the PRD doesn't block any other phase — Phases 2–5 can all be built and tested against the mock adapter.
+- **The RouterAdapter abstraction** keeps rotation logic independent of the router. PassCode only ships the virtual (mock) router, which can also simulate failures for tests.
 
 ---
 

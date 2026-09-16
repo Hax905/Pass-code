@@ -74,29 +74,24 @@ export async function getAnomalies(now = new Date()): Promise<Anomaly[]> {
   const hourAgo = new Date(now.getTime() - HOUR_MS);
   const dayAgo = new Date(now.getTime() - 24 * HOUR_MS);
 
-  const [heavyUsers, deniedLastHour, failedLogins, lastRotation, manualPending, pendingUsers] =
-    await Promise.all([
-      PasswordRequest.aggregate<{ _id: Types.ObjectId; count: number; email?: string }>([
-        { $match: { granted: true, createdAt: { $gte: dayAgo }, user: { $exists: true } } },
-        { $group: { _id: "$user", count: { $sum: 1 } } },
-        { $match: { count: { $gt: ANOMALY_THRESHOLDS.userRequestsPerDay } } },
-        { $sort: { count: -1 } },
-        { $limit: 10 },
-        { $lookup: { from: "users", localField: "_id", foreignField: "_id", as: "u" } },
-        { $project: { count: 1, email: { $first: "$u.email" } } },
-      ]),
-      PasswordRequest.countDocuments({ granted: false, createdAt: { $gte: hourAgo } }),
-      AuditLog.countDocuments({ action: "auth.login.failed", createdAt: { $gte: hourAgo } }),
-      RotationEvent.findOne({ status: { $ne: "PENDING" } })
-        .sort({ createdAt: -1 })
-        .select("status errorMessage createdAt")
-        .lean(),
-      RotationEvent.findOne({ status: "SUCCEEDED" })
-        .sort({ createdAt: -1 })
-        .select("manualApplicationRequired")
-        .lean(),
-      User.countDocuments({ status: "PENDING" }),
-    ]);
+  const [heavyUsers, deniedLastHour, failedLogins, lastRotation, pendingUsers] = await Promise.all([
+    PasswordRequest.aggregate<{ _id: Types.ObjectId; count: number; email?: string }>([
+      { $match: { granted: true, createdAt: { $gte: dayAgo }, user: { $exists: true } } },
+      { $group: { _id: "$user", count: { $sum: 1 } } },
+      { $match: { count: { $gt: ANOMALY_THRESHOLDS.userRequestsPerDay } } },
+      { $sort: { count: -1 } },
+      { $limit: 10 },
+      { $lookup: { from: "users", localField: "_id", foreignField: "_id", as: "u" } },
+      { $project: { count: 1, email: { $first: "$u.email" } } },
+    ]),
+    PasswordRequest.countDocuments({ granted: false, createdAt: { $gte: hourAgo } }),
+    AuditLog.countDocuments({ action: "auth.login.failed", createdAt: { $gte: hourAgo } }),
+    RotationEvent.findOne({ status: { $ne: "PENDING" } })
+      .sort({ createdAt: -1 })
+      .select("status errorMessage createdAt")
+      .lean(),
+    User.countDocuments({ status: "PENDING" }),
+  ]);
 
   const anomalies: Anomaly[] = [];
 
@@ -129,14 +124,6 @@ export async function getAnomalies(now = new Date()): Promise<Anomaly[]> {
       level: "warning",
       title: "Many failed sign-ins",
       detail: `${failedLogins} sign-in attempts failed in the last hour. Someone may be guessing passwords.`,
-    });
-  }
-  if (manualPending?.manualApplicationRequired) {
-    anomalies.push({
-      level: "info",
-      title: "Apply the current password on the router",
-      detail:
-        "The mock router adapter doesn't change the router. Reveal the current password and enter it on the router if you haven't yet.",
     });
   }
   if (pendingUsers > 0) {

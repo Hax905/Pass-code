@@ -2,6 +2,8 @@
 
 Automated network password rotation with individually authenticated, logged access to the current password.
 
+PassCode rotates the password of a built-in **virtual router**; it does not connect to physical network hardware.
+
 Project planning lives in [PRD.md](PRD.md), [STYLES.md](STYLES.md) and [TASKLIST.md](TASKLIST.md). Session prompt: [PROMPT.md](PROMPT.md).
 
 ## Stack
@@ -25,19 +27,19 @@ Requires Node.js 24+.
 
 ## Scripts
 
-| Script                      | What it does                                                                        |
-| --------------------------- | ----------------------------------------------------------------------------------- |
-| `npm run dev`               | Dev server                                                                          |
-| `npm run build`             | Production build                                                                    |
-| `npm run lint`              | ESLint                                                                              |
-| `npm run format` / `:check` | Prettier write / check                                                              |
-| `npm run typecheck`         | Next route typegen + `tsc`                                                          |
-| `npm test`                  | Unit tests (no database needed)                                                     |
-| `npm run test:integration`  | Integration tests against `DATABASE_URL`, using a separate `passcode_test` database |
-| `npm run db:sync`           | Create collections and sync indexes with the Mongoose schemas                       |
-| `npm run rotate`            | Rotate the network password now (prints the outcome, never the password)            |
-| `npm run rotation:worker`   | Run the rotation scheduler as its own process                                       |
-| `npm run user:create-admin` | Create an active admin account (`-- --email <email> [--name <name>]`)               |
+| Script                      | What it does                                                                                                                                                                            |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run dev`               | Dev server                                                                                                                                                                              |
+| `npm run build`             | Production build                                                                                                                                                                        |
+| `npm run lint`              | ESLint                                                                                                                                                                                  |
+| `npm run format` / `:check` | Prettier write / check                                                                                                                                                                  |
+| `npm run typecheck`         | Next route typegen + `tsc`                                                                                                                                                              |
+| `npm test`                  | Unit tests (no database needed)                                                                                                                                                         |
+| `npm run test:integration`  | Integration tests against `DATABASE_URL`, using a separate `passcode_test` database (override with `TEST_DATABASE_NAME`; it must end in `_test`, because the tests delete its contents) |
+| `npm run db:sync`           | Create collections and sync indexes with the Mongoose schemas                                                                                                                           |
+| `npm run rotate`            | Rotate the network password now (prints the outcome, never the password)                                                                                                                |
+| `npm run rotation:worker`   | Run the rotation scheduler as its own process                                                                                                                                           |
+| `npm run user:create-admin` | Create an active admin account (`-- --email <email> [--name <name>]`)                                                                                                                   |
 
 ## Layout
 
