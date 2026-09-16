@@ -126,6 +126,21 @@ export async function revokeUser(
   );
 }
 
+/** Gives a revoked user access again (e.g. revoked by mistake). Old sessions stay invalid. */
+export async function reinstateUser(actor: AuthorizedUser, userId: string): Promise<PublicUser> {
+  assertAdmin(actor);
+  return mutateUser(actor, userId, "user.reinstated", async (user, session) => {
+    if (user.status !== "REVOKED") {
+      throw new UserActionError("invalid_status", "Only revoked users can be reinstated");
+    }
+    return User.findByIdAndUpdate(
+      user._id,
+      { status: "ACTIVE", $unset: { revokedAt: 1 }, $inc: { tokenVersion: 1 } },
+      { session, returnDocument: "after" },
+    );
+  });
+}
+
 export async function changeUserRole(
   actor: AuthorizedUser,
   userId: string,

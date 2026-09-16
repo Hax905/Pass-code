@@ -114,19 +114,29 @@ This file is the shared memory between Claude Code sessions. A session may pick 
 ## Phase 3 — Admin App
 *Goal: admin-facing UI for everything built in Phases 1–2.*
 
-- [ ] Admin dashboard shell (role-gated to admin only)
-- [ ] Rotation settings UI: configure frequency + rotation window, save to `rotation_settings`
-- [ ] Rotation history view: list `rotation_events` with status
-- [ ] Manual "rotate now" button wired to Phase 1's function
-- [ ] Authorized-user management UI: add/remove/revoke users
-- [ ] Password request log view: list `password_requests` (who asked, when, granted/denied)
-- [ ] Current password view (marked sensitive, writes to `audit_log` on view) per STYLES.md §1
-- [ ] Basic anomaly indicator on the dashboard (e.g., spike in requests) — simple threshold-based, not ML, for v1
+- [x] Admin dashboard shell (role-gated to admin only)
+- [x] Rotation settings UI: configure frequency + rotation window, save to `rotation_settings`
+- [x] Rotation history view: list `rotation_events` with status
+- [x] Manual "rotate now" button wired to Phase 1's function
+- [x] Authorized-user management UI: add/remove/revoke users — *"remove" is revoke (records are kept for the audit trail); also approve, reinstate, role change, password reset*
+- [x] Password request log view: list `password_requests` (who asked, when, granted/denied)
+- [x] Current password view (marked sensitive, writes to `audit_log` on view) per STYLES.md §1
+- [x] Basic anomaly indicator on the dashboard (e.g., spike in requests) — simple threshold-based, not ML, for v1
+- [x] Click through the interactive admin UI in a browser (sign in, settings, rotate now, reveal, user management) — *done by the project owner against the sample data*
 
 **Checkpoint definition of done:** An admin can log in, change rotation frequency, see rotation and request history, and manage authorized users entirely through the UI.
 
 **Session Log:**
-- _(empty)_
+- [2026-09-16] [Completed] Sign-in, request-access and home pages (Auth.js `signIn` from a server action; login error codes shown as readable messages; `next` redirect limited to same-site paths). Signed-in admins land on `/admin`; other users see a placeholder until Phase 4 — `src/app/(auth)/`, `src/app/page.tsx`, `src/lib/safe-redirect.ts`, `src/features/auth/password-rules.ts`
+- [2026-09-16] [Completed] Data access layer: `getSessionUser`, `requirePageAccess(level, path)` (visitors → `/login?next=…`, non-admins → `/?denied=admin`, refusal audited) and `requireActionAccess` for server actions. The admin layout is only a shell; every page and every action checks access itself (Next.js guidance: layouts don't re-render on navigation) — `src/features/auth/dal.ts`, `src/app/admin/layout.tsx`
+- [2026-09-16] [Completed] Dashboard: rotation status (schedule, last rotation, current password age, next due), alerts, reveal-password card (confirmation dialog, `password.viewed` audit entry written before the password is returned, hides after 60 s) and rotate-now button — `src/app/admin/page.tsx`, `src/features/admin/components/`, `src/features/rotation/rotation-service.ts` (`revealCurrentPassword`)
+- [2026-09-16] [Completed] Rotation page: settings form (enabled, interval in hours/days/weeks, optional window that may cross midnight, time zone) and history table. `saveRotationSettings` validates with Zod (1 hour to 1 year, both window ends or neither, valid time zone), uses a version check so two admins can't silently overwrite each other, and audits before/after values — `src/app/admin/rotation/page.tsx`, `src/features/rotation/settings.ts`
+- [2026-09-16] [Completed] Users page: status filter, add user, approve/reject, revoke with an optional reason, reinstate, make admin/user, reset password. New `reinstateUser` (REVOKED → ACTIVE, bumps `tokenVersion` so old sessions stay invalid) and API routes `POST /api/admin/users/[id]/role|password|reinstate` — `src/app/admin/users/page.tsx`, `src/features/auth/users.ts`, `src/app/api/admin/users/[id]/`
+- [2026-09-16] [Completed] Password requests page (granted/denied filter, requester email, denial reason, IP) and anomaly indicators: a user with more than 5 granted requests in 24 h, 10+ denials in 1 h, 20+ failed sign-ins in 1 h, a failed last rotation, a password waiting to be applied by hand, accounts waiting for approval — `src/app/admin/requests/page.tsx`, `src/features/admin/activity.ts`
+- [2026-09-16] [Completed] Tests: 57 unit (adds time/schedule formatting and redirect safety) and 41 integration (adds settings create/update/conflict/validation, status and history, audited reveal, reinstate, request log, anomaly thresholds and time windows). Production build passes. HTTP check against `next start` + `passcode_test`: 43/44 passed; the one failure was the check itself (React inserts `<!-- -->` between "by" and the email) — `src/features/admin/*.test.ts`
+- [2026-09-16] [Pivot] **Admin UI uses Server Components for reads and Server Actions for changes, not React Query** (STYLES.md §2.1). Each action re-renders the page with fresh data in the same round trip, so no client-side cache is needed, and all authorization stays on the server. React Query remains available for Phase 4's chat UI if it needs client-side state — `src/app/admin/actions.ts`, `STYLES.md`
+- [2026-09-16] [Pivot] shadcn/ui components added: alert, alert-dialog, badge, card, dialog, input, label, native-select, separator, table (base-nova style, built on Base UI: use the `render` prop instead of `asChild`) — `src/components/ui/`
+- [2026-09-16] [Completed] **Phase 3 checkpoint met.** The project owner tested the admin UI in a browser against sample data on `next start` (`passcode_test`, scheduler on): requested an account, had it approved and promoted to admin (which ended the old session as designed), and confirmed the admin app works
 
 ---
 

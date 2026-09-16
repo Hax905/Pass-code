@@ -32,7 +32,8 @@ This document answers the PRD's open questions with concrete defaults so develop
 - **Framework:** Next.js (React, TypeScript)
 - **Styling:** Tailwind CSS
 - **UI components:** shadcn/ui (accessible, unstyled primitives that fit Tailwind)
-- **State/data fetching:** React Query (TanStack Query) for server state
+- **State/data fetching:** React Query (TanStack Query) for server state. *Pivot (2026-09-16):* the admin app reads data in Server Components and changes it through Server Actions (`src/app/admin/actions.ts`), which re-render the page in the same round trip; React Query is kept for client-heavy screens such as the Phase 4 chat.
+- **Access checks in the UI:** pages call `requirePageAccess` and server actions call `requireActionAccess` (`src/features/auth/dal.ts`); layouts are never the only check.
 - **Rationale:** Next.js gives us a single deployable app with both the frontend and API routes, which fits the "single app, role-based views" decision above and minimizes moving parts for a small team.
 
 ### 2.2 Backend

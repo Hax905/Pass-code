@@ -1,23 +1,7 @@
 import bcrypt from "bcrypt";
 
 export const BCRYPT_ROUNDS = 12;
-export const MIN_PASSWORD_LENGTH = 12;
-// bcrypt silently ignores everything after 72 bytes, so longer passwords are refused.
-export const MAX_PASSWORD_BYTES = 72;
-
-/** Returns a problem description, or undefined if the password is acceptable. */
-export function checkPasswordPolicy(password: string, email?: string): string | undefined {
-  if (password.length < MIN_PASSWORD_LENGTH) {
-    return `Password must be at least ${MIN_PASSWORD_LENGTH} characters`;
-  }
-  if (Buffer.byteLength(password, "utf8") > MAX_PASSWORD_BYTES) {
-    return `Password must be at most ${MAX_PASSWORD_BYTES} bytes`;
-  }
-  if (email && password.trim().toLowerCase() === email.trim().toLowerCase()) {
-    return "Password must not be your email address";
-  }
-  return undefined;
-}
+export { checkPasswordPolicy, MAX_PASSWORD_BYTES, MIN_PASSWORD_LENGTH } from "./password-rules";
 
 export function hashPassword(password: string): Promise<string> {
   return bcrypt.hash(password, BCRYPT_ROUNDS);

@@ -6,6 +6,7 @@
 // SUCCEEDED events count as the current password.
 import mongoose, { type Types } from "mongoose";
 
+import type { AuthorizedUser } from "@/features/auth/types";
 import { decryptSecret, encryptSecret } from "@/lib/crypto/secret-box";
 import { connectDb } from "@/lib/db/connection";
 import { AuditLog, RotationEvent, type ROTATION_TRIGGERS } from "@/lib/db/models";
@@ -187,6 +188,25 @@ export async function getCurrentNetworkPassword(
     eventId: event._id.toString(),
     rotatedAt: event.completedAt ?? event.createdAt,
   };
+}
+
+/**
+ * Shows the current password to an admin (STYLES.md §1: a sensitive, logged
+ * action). The disclosure is written to audit_log before the password is returned.
+ */
+export async function revealCurrentPassword(
+  actor: AuthorizedUser,
+  meta: { source?: string } = {},
+): Promise<{ password: string; eventId: string; rotatedAt: Date } | null> {
+  if (actor.role !== "ADMIN") throw new Error("Admin privileges required");
+  const current = await getCurrentNetworkPassword();
+  await AuditLog.create({
+    actor: actor.id,
+    action: current ? "password.viewed" : "password.view_empty",
+    target: current?.eventId,
+    metadata: { source: meta.source },
+  });
+  return current;
 }
 
 function describeError(error: unknown, password: string): string {
