@@ -23,6 +23,7 @@ Requires Node.js 24+.
 4. `npm run db:sync` — creates collections and indexes.
 5. Set `AUTH_SECRET` (`npx auth secret`, or `openssl rand -base64 33`) and `AUTH_URL`.
 6. `npm run user:create-admin -- --email you@example.com` creates the first admin (you'll be asked for a password).
+   For the assistant at `/chat`, also set `ANTHROPIC_API_KEY` (and optionally `PASSCODE_NETWORK_NAME` and `PASSCODE_SUPPORT_CONTACT`).
 7. `npm run dev` — http://localhost:3000
 
 ## Scripts
@@ -44,6 +45,6 @@ Requires Node.js 24+.
 ## Layout
 
 - `src/app` — routes (UI + route handlers)
-- `src/features/<feature>` — feature code per PRD phase (`rotation`, `auth`, `admin`, `chatbot`)
+- `src/features/<feature>` — feature code per PRD phase (`rotation`, `auth`, `admin`, `chat`)
 - `src/lib/db` — MongoDB connection and data models (import from `@/lib/db` in app code)
 - `scripts/` — CLI scripts run with `tsx`

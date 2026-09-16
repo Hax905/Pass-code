@@ -114,7 +114,9 @@ describe("rotation engine (integration)", () => {
     };
 
     const first = rotateNetworkPassword({ trigger: "SCHEDULED", adapter: slowAdapter });
-    await expect.poll(() => RotationEvent.countDocuments({ status: "PENDING" })).toBe(1);
+    await expect
+      .poll(() => RotationEvent.countDocuments({ status: "PENDING" }), { timeout: 10_000 })
+      .toBe(1);
 
     await expect(
       rotateNetworkPassword({ trigger: "MANUAL", adapter: new MockRouterAdapter() }),

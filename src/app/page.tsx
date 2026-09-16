@@ -10,6 +10,7 @@ import { logoutAction } from "./(auth)/actions";
 export default async function Home({ searchParams }: PageProps<"/">) {
   const [user, { denied }] = await Promise.all([getSessionUser(), searchParams]);
   if (user?.role === "ADMIN") redirect("/admin");
+  if (user && denied !== "admin") redirect("/chat");
 
   return (
     <main className="flex flex-1 items-center justify-center p-8">
@@ -29,18 +30,20 @@ export default async function Home({ searchParams }: PageProps<"/">) {
             <p className="text-sm">
               Signed in as <span className="font-medium">{user.email}</span>.
             </p>
-            <p className="text-sm text-muted-foreground">
-              The assistant that gives you the network password is coming soon.
-            </p>
-            <form action={logoutAction}>
-              <Button type="submit" variant="outline">
-                Sign out
+            <div className="flex justify-center gap-2">
+              <Button nativeButton={false} render={<Link href="/chat" />}>
+                Open the assistant
               </Button>
-            </form>
+              <form action={logoutAction}>
+                <Button type="submit" variant="outline">
+                  Sign out
+                </Button>
+              </form>
+            </div>
           </div>
         ) : (
           <div className="flex justify-center gap-2">
-            <Button nativeButton={false} render={<Link href="/login" />}>
+            <Button nativeButton={false} render={<Link href="/login?next=/chat" />}>
               Sign in
             </Button>
             <Button variant="outline" nativeButton={false} render={<Link href="/register" />}>

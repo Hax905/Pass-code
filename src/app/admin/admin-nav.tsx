@@ -9,6 +9,7 @@ const LINKS = [
   { href: "/admin/rotation", label: "Rotation" },
   { href: "/admin/users", label: "Users" },
   { href: "/admin/requests", label: "Password requests" },
+  { href: "/chat", label: "Assistant" },
 ] as const;
 
 export function AdminNav() {

@@ -35,6 +35,16 @@ export const rotationEnvSchema = z.object({
 
 export type RotationEnv = z.infer<typeof rotationEnvSchema>;
 
+// Phase 4 — chatbot. The Anthropic SDK reads ANTHROPIC_API_KEY itself; the
+// other values only personalise the assistant's answers.
+export const chatEnvSchema = z.object({
+  ANTHROPIC_API_KEY: z.string().min(1).optional(),
+  PASSCODE_NETWORK_NAME: z.string().trim().min(1).max(64).optional(),
+  PASSCODE_SUPPORT_CONTACT: z.string().trim().min(1).max(200).optional(),
+});
+
+export type ChatEnv = z.infer<typeof chatEnvSchema>;
+
 function parseEnv<T extends z.ZodType>(schema: T, source: NodeJS.ProcessEnv): z.infer<T> {
   const parsed = schema.safeParse(source);
   if (!parsed.success) {
@@ -57,4 +67,8 @@ export function getServerEnv(source: NodeJS.ProcessEnv = process.env): ServerEnv
 // Not cached, so tests can set the key at runtime; parsing is cheap.
 export function getRotationEnv(source: NodeJS.ProcessEnv = process.env): RotationEnv {
   return parseEnv(rotationEnvSchema, source);
+}
+
+export function getChatEnv(source: NodeJS.ProcessEnv = process.env): ChatEnv {
+  return parseEnv(chatEnvSchema, source);
 }

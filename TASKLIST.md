@@ -145,19 +145,30 @@ This file is the shared memory between Claude Code sessions. A session may pick 
 ## Phase 4 — Chatbot
 *Goal: authenticated users can retrieve the password and get security help through a conversational interface.*
 
-- [ ] Server-side chatbot API route calling Anthropic API per STYLES.md §2.6 (never client-side)
-- [ ] Deterministic authorization check *before* any prompt construction — the model never decides who is authorized
-- [ ] Password retrieval flow: authenticated + authorized user asks → bot returns current password → write to `password_requests`
-- [ ] Denial flow: unauthenticated/unauthorized user asks → bot explains how to become authorized → attempt logged
-- [ ] Security Q&A: scoped system prompt covering common questions (why did it change, how to connect, who to contact)
-- [ ] Network suggestions: bot can reference the user's own request history for basic personalized tips
-- [ ] Rate limiting at the API route level (sliding window against `password_requests`), independent of the model
-- [ ] Chat UI (user-facing, role-gated to authenticated users)
+- [x] Server-side chatbot API route calling Anthropic API per STYLES.md §2.6 (never client-side)
+- [x] Deterministic authorization check *before* any prompt construction — the model never decides who is authorized
+- [x] Password retrieval flow: authenticated + authorized user asks → bot returns current password → write to `password_requests` — *the password is shown in a separate panel; the model never sees it (see pivot)*
+- [x] Denial flow: unauthenticated/unauthorized user asks → bot explains how to become authorized → attempt logged — *fixed answer, no model call*
+- [x] Security Q&A: scoped system prompt covering common questions (why did it change, how to connect, who to contact)
+- [x] Network suggestions: bot can reference the user's own request history for basic personalized tips
+- [x] Rate limiting at the API route level (sliding window against `password_requests`), independent of the model
+- [x] Chat UI (user-facing, role-gated to authenticated users) — *page is open to everyone; the API decides (see pivot)*
+- [ ] Live check against the real Anthropic API: needs `ANTHROPIC_API_KEY` in `.env`. Everything above is verified with a scripted fake model, not the real one yet
 
 **Checkpoint definition of done:** An authenticated authorized user can ask the chatbot for the password and receive it (logged); an unauthorized user cannot, and sees a clear denial with next steps.
 
 **Session Log:**
-- _(empty)_
+- [2026-09-16] [Completed] `POST /api/chat`: same-origin check → `resolveChatAccess` (ACTIVE user with current `tokenVersion`, straight from the database) → per-user message limit (20 per 10 min, in memory) → Zod-validated text-only history (≤ 20 turns, ≤ 2000 chars each, alternating, ending with the user) → `runChatTurn`. Responses are `Cache-Control: no-store`; Anthropic errors become a friendly 503 — `src/app/api/chat/route.ts`, `src/features/chat/access.ts`, `src/features/chat/rate-limit.ts`
+- [2026-09-16] [Completed] Chat turn: `@anthropic-ai/sdk` 0.126, `claude-opus-5` (adaptive thinking by default, `effort: "low"` for short chat answers), server-side refusal fallback (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`), strict tools `show_network_password`, `get_rotation_info`, `get_my_password_requests`, at most 5 tool rounds, fixed reply on `refusal` — `src/features/chat/chat-service.ts`, `src/features/chat/prompt.ts`
+- [2026-09-16] [Completed] Password gate `requestNetworkPassword`: re-reads the user (status + `tokenVersion`) at the moment of the request, allows 3 grants per user per rolling hour, logs every outcome to `password_requests` (granted, `REVOKED`, `NOT_AUTHORIZED`, `RATE_LIMITED`); at most one reveal per chat turn — `src/features/chat/password-access.ts`
+- [2026-09-16] [Completed] Chat UI at `/chat`: suggestions, password panel with copy button that hides after 60 s and is never sent back to the server, sign-in / request-access buttons on denial. Signed-in users land on `/chat`; admins get an "Assistant" link — `src/app/chat/`, `src/app/page.tsx`, `src/app/admin/admin-nav.tsx`
+- [2026-09-16] [Completed] Optional env `PASSCODE_NETWORK_NAME` and `PASSCODE_SUPPORT_CONTACT` personalise answers — `src/lib/env.ts`, `.env.example`
+- [2026-09-16] [Completed] Tests: 63 unit (history validation, limiter, prompt/tools, denial text) and 58 integration (adds access gate, password gate, rate limit with retry time, mid-conversation revocation, one reveal per turn, own-data-only tool results, refusal, tool-round cap; a fake Claude client records every request and the tests assert the password never appears in any of them) — `src/features/chat/*.test.ts`. The Phase 1 "second rotation" test now waits up to 10 s for Atlas instead of 1 s
+- [2026-09-16] [Pivot] **The model never sees the password.** `show_network_password` returns only "shown" / "not shown" to the model; the password travels to the browser in a separate `reveal` field. Prompt injection therefore can't make the model leak it, and no password is sent to Anthropic — `src/features/chat/chat-service.ts`
+- [2026-09-16] [Pivot] **`/chat` is open to everyone, and people who aren't signed in (or are revoked) never reach the model.** The API answers them with a fixed explanation plus sign-in / request-access buttons and logs a denied request (at most 10 per address or user per 10 minutes, so the log can't be flooded). PRD §6.3 would allow generic Q&A for anonymous visitors; left out to keep cost and abuse surface down — `src/features/chat/access.ts`, `src/app/chat/page.tsx`
+- [2026-09-16] [Pivot] Chat message limit is in memory, so each server instance counts separately; the password limit itself is in the database and holds across instances. Two simultaneous reveals can slip past the 3-per-hour limit by one — `src/features/chat/rate-limit.ts`, `src/features/chat/password-access.ts`
+- [2026-09-16] [Completed] HTTP check against `next start` + `passcode_test` (no API key): 16/16 passed — `/chat` renders for visitors and signed-in users; anonymous ask → 401 with the fixed explanation, logged, `no-store`; cross-origin → 403; revoked account → 401; malformed history and smuggled `tool_result` → 400; missing API key → friendly 503 with no `reveal`. Fixed on the way: the SDK reports missing credentials with a plain `Error`, so the route now turns every unexpected failure into the 503 reply (details go to the server log). Full integration suite: 58/58 (one earlier run timed out in a setup hook while Atlas was slow) — `src/app/api/chat/route.ts`
+- [2026-09-16] [Blocked] Checkpoint not declared met yet: no `ANTHROPIC_API_KEY` is configured, so the real model hasn't been called (see the unchecked task above)
 
 ---
 

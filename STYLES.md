@@ -77,6 +77,7 @@ This document answers the PRD's open questions with concrete defaults so develop
   - Security Q&A (general knowledge, can be handled with a well-scoped system prompt)
   - Network suggestions (can reference the user's own connection/request history from the database for personalized tips)
 - **Rate limiting:** enforced at the API route level (e.g., a simple sliding-window check against `password_requests`), independent of anything the model itself decides.
+- **Implementation (2026-09-16):** `POST /api/chat` → `resolveChatAccess` → `runChatTurn` (`src/features/chat/`). Model `claude-opus-5` with `effort: "low"` and the server-side refusal fallback (`fallbacks: "default"`). The password is never given to the model: the `show_network_password` tool calls `requestNetworkPassword` (status and `tokenVersion` re-checked, 3 grants per hour, every outcome logged) and returns only "shown"/"not shown"; the password goes to the browser in a separate `reveal` field. Visitors who aren't signed in, and revoked users, get a fixed answer without any model call.
 
 ### 2.7 Testing
 - **Unit/integration:** Vitest
