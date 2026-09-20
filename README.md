@@ -2,13 +2,28 @@
 
 Automated network password rotation with individually authenticated, logged access to the current password.
 
-PassCode rotates the password of a built-in **virtual router**; it does not connect to physical network hardware.
+PassCode rotates the password of a built-in **virtual router**; it does not connect to physical network hardware. It is a **demo**: it runs locally and is not deployed publicly.
+
+Guides: [for administrators](docs/ADMIN.md) · [for people who need the Wi-Fi password](docs/USER.md).
 
 Project planning lives in [PRD.md](PRD.md), [STYLES.md](STYLES.md) and [TASKLIST.md](TASKLIST.md). Session prompt: [PROMPT.md](PROMPT.md).
 
 ## Stack
 
-Next.js 16 (TypeScript, App Router) · Tailwind CSS 4 + shadcn/ui · MongoDB (Atlas) + Mongoose · Zod · Vitest
+Next.js 16 (TypeScript, App Router) · Tailwind CSS 4 + shadcn/ui · MongoDB (Atlas) + Mongoose · Zod · Auth.js · Claude (Anthropic API) · Vitest + Playwright
+
+## Run the demo
+
+With `.env` filled in as described below (`DATABASE_URL`, `PASSCODE_ENCRYPTION_KEY`, `AUTH_SECRET`, `AUTH_URL`, and `ANTHROPIC_API_KEY` for the assistant):
+
+```bash
+npm install
+DATABASE_NAME=passcode_demo npm run demo:seed   # demo accounts, rotations and requests
+npm run build
+DATABASE_NAME=passcode_demo ROTATION_SCHEDULER_ENABLED=true npm start
+```
+
+Open http://localhost:3000 and sign in as `admin@passcode.demo` (the seeding command prints every account and the shared password). `npm run demo:seed` deletes everything in the database it points at, so it refuses any database whose name doesn't end in `_demo` or `_test` unless you pass `--force`.
 
 ## Local setup
 
@@ -40,7 +55,11 @@ Requires Node.js 24+.
 | `npm run db:sync`           | Create collections and sync indexes with the Mongoose schemas                                                                                                                           |
 | `npm run rotate`            | Rotate the network password now (prints the outcome, never the password)                                                                                                                |
 | `npm run rotation:worker`   | Run the rotation scheduler as its own process                                                                                                                                           |
+| `npm run demo:seed`         | Load demo accounts and activity (needs a `_demo`/`_test` database)                                                                                                                      |
+| `npm run test:e2e`          | Playwright end-to-end tests (`npx playwright install chromium` once; uses `passcode_e2e_test`)                                                                                          |
 | `npm run user:create-admin` | Create an active admin account (`-- --email <email> [--name <name>]`)                                                                                                                   |
+
+Set `VIRTUAL_ROUTER_FAILURE=always` (or `first-attempt`) to make the virtual router fail on purpose and see the failure path in the admin UI.
 
 ## Layout
 

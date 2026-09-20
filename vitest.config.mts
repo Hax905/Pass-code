@@ -12,6 +12,7 @@ export default defineConfig(({ mode }) => {
       environment: "node",
       include: integration ? ["src/**/*.integration.test.ts"] : ["src/**/*.test.{ts,tsx}"],
       exclude: integration ? [] : ["src/**/*.integration.test.ts"],
+      // e2e/ belongs to Playwright.
       ...(integration && { testTimeout: 30_000, hookTimeout: 60_000, fileParallelism: false }),
     },
   };

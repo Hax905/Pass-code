@@ -16,7 +16,9 @@
     "db:sync": "tsx scripts/db-sync.ts",
     "rotate": "tsx scripts/rotate.ts",
     "rotation:worker": "tsx scripts/rotation-worker.ts",
-    "user:create-admin": "tsx scripts/create-admin.ts"
+    "user:create-admin": "tsx scripts/create-admin.ts",
+    "demo:seed": "tsx scripts/demo-seed.ts",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.126.0",
@@ -38,6 +40,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4",
     "@types/bcrypt": "^6.0.0",
     "@types/node": "^24.13.4",

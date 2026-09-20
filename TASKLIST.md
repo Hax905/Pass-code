@@ -175,35 +175,48 @@ This file is the shared memory between Claude Code sessions. A session may pick 
 ## Phase 5 — Observability & Hardening
 *Goal: the system is trustworthy under real-world edge cases, not just the happy path.*
 
-- [ ] Anomaly detection: flag unusually high request volume from a single user (possible continued informal sharing)
-- [ ] Alerting: admin notification (in-app, per STYLES.md §1) on rotation failure or anomaly
-- [ ] Audit log integrity check (append-only pattern, no update/delete on `audit_log` rows)
-- [ ] Offboarding flow: confirm a revoked user immediately loses chatbot/app access (test explicitly, not just assumed from Phase 2)
-- [ ] Edge case: virtual router failing during rotation (simulated with `MockRouterAdapter` failure options) — confirm failure path from Phase 1 surfaces correctly in admin UI
-- [ ] Edge case: rotation scheduled during an active admin edit to settings — confirm no race condition
-- [ ] Load-test the rate limiter with concurrent requests
+- [x] Anomaly detection: flag unusually high request volume from a single user (possible continued informal sharing) — *built in Phase 3; now also flags users who hit the hourly password limit*
+- [x] Alerting: admin notification (in-app, per STYLES.md §1) on rotation failure or anomaly
+- [x] Audit log integrity check (append-only pattern, no update/delete on `audit_log` rows)
+- [x] Offboarding flow: confirm a revoked user immediately loses chatbot/app access (test explicitly, not just assumed from Phase 2)
+- [x] Edge case: virtual router failing during rotation (simulated with `MockRouterAdapter` failure options) — confirm failure path from Phase 1 surfaces correctly in admin UI
+- [x] Edge case: rotation scheduled during an active admin edit to settings — confirm no race condition
+- [x] Load-test the rate limiter with concurrent requests
 
 **Checkpoint definition of done:** All edge cases above have a passing test, and a simulated "revoked user tries to use the app" scenario is confirmed blocked end-to-end.
 
 **Session Log:**
-- _(empty)_
+- [2026-09-18] [Completed] **Password limit is now exact under load.** `requestNetworkPassword` runs as one transaction that also bumps `users.passwordRequestSeq`, so simultaneous requests for the same user conflict and MongoDB runs them one after another. Load test: 20 simultaneous requests → exactly 3 granted, 17 logged `RATE_LIMITED`, 20 log entries — `src/features/chat/password-access.ts`, `src/lib/db/models.ts`
+- [2026-09-18] [Completed] **Audit log is append-only.** Mongoose middleware refuses `updateOne/updateMany/replaceOne/findOneAndUpdate/findOneAndReplace/deleteOne/deleteMany/findOneAndDelete`, saves of existing documents, and non-insert `bulkWrite` operations with `AuditLogImmutableError`; inserts are the only allowed write. Tests clear collections through the raw driver via `clearTestDatabase()` — `src/lib/db/models.ts`, `src/test/integration-db.ts`, `src/lib/db/audit-log.integration.test.ts`
+- [2026-09-18] [Completed] **In-app alerting on every admin page:** a header badge showing the number of warnings (failed rotation, heavy requester, limit reached, denial or sign-in spikes), plus a one-minute auto-refresh of admin pages so background events appear without a reload (client state such as a half-filled form is kept) — `src/app/admin/admin-alerts.tsx`, `src/app/admin/auto-refresh.tsx`, `src/app/admin/layout.tsx`, `src/features/admin/activity.ts`
+- [2026-09-18] [Completed] **Virtual router failure switch for demos and tests:** `VIRTUAL_ROUTER_FAILURE=off|always|first-attempt` (`first-attempt` fails once, the automatic retry succeeds) — `src/lib/env.ts`, `src/features/rotation/router-adapter.ts`, `.env.example`
+- [2026-09-18] [Completed] Tests: 64 unit and 74 integration. New: audit-log immutability (14 write paths refused), rate limits under load (20 simultaneous requests, per-user allowances, revocation mid-flight, in-memory burst), rotation edge cases (two simultaneous settings edits → exactly one winner; 6 scheduler ticks overlapping settings saves → exactly one rotation; scheduling off; always-failing router surfaces in status, history and alerts while the old password stays current; fail-once recovers; scheduler backs off then succeeds), and offboarding through the real route handlers with the session and model mocked (revoked user loses `/api/me`, chat, pages, actions, password and sign-in; revoked admin loses the admin app; demotion ends the admin session; visitors get the fixed explanation) — `src/**/*.integration.test.ts`
+- [2026-09-18] [Completed] **Phase 5 checkpoint met.** End-to-end against `next start` (separate `passcode_e2e_test` database, scheduler on, `VIRTUAL_ROUTER_FAILURE=always`, no API key): the scheduler's failed rotation appeared on the dashboard with the router error within ~60 s, the alert badge showed on the dashboard and the users page, the rotation history listed the failed attempt, no password was created, and a burst of 30 simultaneous chat requests from one user gave exactly 20 through and 10 rate-limited (429)
+- [2026-09-18] [Completed] **Bug found by the new race test and fixed:** two scheduler instances could rotate twice in a row when one finished between the other's read and its own start (the single-rotation index only covers overlapping rotations). `rotateNetworkPassword` now takes `supersededAfter` and aborts with `RotationSupersededError` if a rotation succeeded after the one the decision was based on; the scheduler reports `superseded` — `src/features/rotation/rotation-service.ts`, `src/features/rotation/scheduler.ts`
+- [2026-09-18] [Pivot] Append-only is enforced in application code, not by the database: doing it at the database level needs a restricted MongoDB user (no `update`/`delete` on `audit_log`), which is out of scope for a local demo. Anything with direct database access can still edit the collection — noted for Phase 6's demo documentation — `src/lib/db/models.ts`
 
 ---
 
-## Phase 6 — Polish & Launch Readiness
-*Goal: ready for real use.*
+## Phase 6 — Polish & Demo Readiness
+*Goal: a functional, repeatable local demo. PassCode is a demo and is not deployed publicly (decided 2026-09-16).*
 
-- [ ] End-to-end tests (Playwright) covering PRD §7 flows A–E
-- [ ] Finalize deployment target and deploy (STYLES.md §2.8)
-- [ ] Finalize database hosting and run production migration
-- [ ] Write a short admin-facing README: how to configure rotation, add/remove users, read logs
-- [ ] Write a short user-facing help doc: how to log in and ask the chatbot for the password
-- [ ] Document that PassCode ships with the virtual (mock) router only; no physical router support (decided 2026-09-16)
+- [x] End-to-end tests (Playwright) covering PRD §7 flows A–E
+- [x] Local demo setup: one command that syncs the database and loads demo accounts and data, plus run instructions (no public deployment)
+- [x] Confirm the demo database setup on Atlas (`db:sync` on a clean database)
+- [x] Write a short admin-facing README: how to configure rotation, add/remove users, read logs
+- [x] Write a short user-facing help doc: how to log in and ask the chatbot for the password
+- [x] Document that PassCode ships with the virtual (mock) router only; no physical router support (decided 2026-09-16)
+- [ ] Live check of the assistant against the real Anthropic API (carried over from Phase 4): needs `ANTHROPIC_API_KEY` in `.env`
 
-**Checkpoint definition of done:** Deployed, documented, and every flow in PRD §7 has passed an end-to-end test against the deployed environment.
+**Checkpoint definition of done:** The demo can be set up from a fresh clone with the documented steps, it is documented, and every flow in PRD §7 has passed an end-to-end test against a locally running production build.
 
 **Session Log:**
-- _(empty)_
+- [2026-09-18] [Completed] **Project health check before starting this phase.** Lint, format, typecheck, build, 64 unit tests, 74 integration tests; `passcode` on Atlas healthy (replica set, all collections, indexes match the schemas); CLI tools work (`db:sync`, `user:create-admin`, `rotate`, `rotate` with a failing router); 39/39 core flows over HTTP (public pages, registration → approval → sign-in, role gates, admin pages, revoke → instant lock-out → reinstate) and 10/10 core service checks (settings saved and audited, password handed over and logged without leaking, audit log refusing changes, password encrypted at rest, rotation status and history); the scheduler rotated and the result appeared in the admin UI. **No core errors.** Two test-only defects fixed: `UID` is read-only in bash (health script), and the rotation-lock test released its pause handle before the adapter had it
+- [2026-09-18] [Completed] `npm run demo:seed` loads demo accounts (admin, second admin, two users, a revoked user, one waiting for approval), a 7-day schedule, a failed and a successful rotation, and password requests. It deletes everything first, so it refuses databases whose name doesn't end in `_demo`/`_test` unless `--force` — `scripts/demo-seed.ts`, `package.json`
+- [2026-09-18] [Completed] Playwright end-to-end tests covering PRD §7: flow A (admin changes the schedule, sees it saved and on the dashboard), flow B (rotate now → history entry; reveal the current password), flow C (the password appears in its own panel and hides again), flow D (visitor gets the explanation plus sign-in/request-access, and the attempt shows in the request log; a regular user can't reach the admin app), flow E (admin revokes a signed-in user → refused on their next message → reinstated; the dashboard flags a heavy requester). 8/8 pass in ~50 s against a production build on `passcode_e2e_test` — `playwright.config.ts`, `e2e/`, `.gitignore`
+- [2026-09-18] [Completed] Guides for both audiences and demo run instructions in the README; CI gained an end-to-end job (MongoDB from docker-compose, generated secrets, Chromium, report uploaded on failure) — `docs/ADMIN.md`, `docs/USER.md`, `README.md`, `.github/workflows/ci.yml`
+- [2026-09-18] [Completed] Demo setup verified end to end as documented: seeded `passcode_demo` from empty (collections and indexes created by the seeder), `npm run build`, `npm start` — the dashboard showed the schedule, alerts and pending account; users, requests and rotation pages all rendered the demo data; the seeder refused the real `passcode` database
+- [2026-09-18] [Pivot] Flow C's end-to-end test stubs the `/api/chat` response so it doesn't spend API credits or depend on the network; what the password gate itself does (authorization, limit, logging, the model never seeing the password) is covered by the integration tests — `e2e/flows.spec.ts`
 
 ---
 
