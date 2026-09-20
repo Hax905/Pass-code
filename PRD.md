@@ -39,6 +39,7 @@ The fix is not just "rotate passwords more often" — rotation alone just shorte
 - **Integration with physical routers or access points.** *Decided 2026-09-16:* to avoid bloat and save time, PassCode works only with a built-in virtual (mock) router, in v1 and in the finished product.
 - Building a full IT ticketing or helpdesk system — the chatbot handles a bounded set of security Q&A, not general IT support.
 - Guest network management (unless explicitly requested later).
+- **Public deployment.** *Decided 2026-09-16:* PassCode is a functional **demo**, not a final product. It runs locally (with MongoDB Atlas as its database) and is not deployed to a public host.
 
 ## 5. Users & Personas
 
@@ -132,7 +133,7 @@ Each phase below is designed to be a **self-contained, non-overlapping checkpoin
 - **Phase 3 — Admin App:** settings UI for rotation frequency, rotation history view, authorized-user management UI, request logs, manual rotation trigger.
 - **Phase 4 — Chatbot:** password retrieval (authenticated), security Q&A, network suggestions, rate limiting, denial flow for unauthorized users.
 - **Phase 5 — Observability & Hardening:** anomaly detection/alerts, audit log integrity, offboarding flow, edge-case handling (rotation failure, hardware unreachable, etc.).
-- **Phase 6 — Polish & Launch Readiness:** end-to-end testing across phases, documentation, deployment.
+- **Phase 6 — Polish & Demo Readiness:** end-to-end testing across phases, documentation, and a repeatable local demo setup (no public deployment — see §4).
 
 (The companion **Task List** document will break each phase into concrete, assignable tasks with explicit "done" criteria so a new Claude Code session can pick up exactly where the last one stopped.)
 

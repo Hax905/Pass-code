@@ -1,4 +1,4 @@
-import "@/test/integration-db";
+import { clearTestDatabase } from "@/test/integration-db";
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -38,11 +38,11 @@ describe("auth layer (integration)", () => {
   });
 
   beforeEach(async () => {
-    for (const model of allModels) await model.deleteMany();
+    await clearTestDatabase();
   });
 
   afterAll(async () => {
-    for (const model of allModels) await model.deleteMany();
+    await clearTestDatabase();
     await disconnectDb();
   });
 

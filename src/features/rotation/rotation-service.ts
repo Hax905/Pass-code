@@ -21,6 +21,14 @@ export const APPLY_TIMEOUT_MS = 30_000;
 // otherwise block every future rotation.
 export const STALE_ROTATION_MS = 10 * 60 * 1000;
 
+/** A newer rotation already succeeded, so this one is no longer wanted. */
+export class RotationSupersededError extends Error {
+  constructor() {
+    super("Another rotation already produced a newer password");
+    this.name = "RotationSupersededError";
+  }
+}
+
 export class RotationInProgressError extends Error {
   constructor() {
     super("Another password rotation is already in progress");
@@ -39,6 +47,12 @@ export interface RotateOptions {
   generate?: () => string;
   retryDelayMs?: number;
   applyTimeoutMs?: number;
+  /**
+   * Abort if a rotation succeeded after this moment. The scheduler passes the
+   * success its decision was based on, so two instances that both decided to
+   * rotate can't rotate twice in a row.
+   */
+  supersededAfter?: Date | null;
 }
 
 export interface RotationResult {
@@ -77,12 +91,24 @@ export async function applyWithRetry(
 }
 
 export async function rotateNetworkPassword(options: RotateOptions): Promise<RotationResult> {
-  const adapter = options.adapter ?? createRouterAdapter(getRotationEnv().ROUTER_ADAPTER);
+  const adapter =
+    options.adapter ??
+    createRouterAdapter(getRotationEnv().ROUTER_ADAPTER, {
+      failure: getRotationEnv().VIRTUAL_ROUTER_FAILURE,
+    });
   const key = options.encryptionKey ?? getRotationEnv().PASSCODE_ENCRYPTION_KEY;
   const password = (options.generate ?? generatePassword)();
 
   await connectDb();
   await failStaleRotations();
+
+  if (options.supersededAfter !== undefined) {
+    const newer = await RotationEvent.exists({
+      status: "SUCCEEDED",
+      createdAt: { $gt: options.supersededAfter ?? new Date(0) },
+    });
+    if (newer) throw new RotationSupersededError();
+  }
 
   let eventId: Types.ObjectId;
   try {

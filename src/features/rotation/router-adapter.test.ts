@@ -25,6 +25,18 @@ describe("MockRouterAdapter", () => {
   it("is what createRouterAdapter returns for 'mock'", () => {
     expect(createRouterAdapter("mock")).toBeInstanceOf(MockRouterAdapter);
   });
+
+  it("can be told to fail for demos and tests", async () => {
+    await expect(
+      createRouterAdapter("mock", { failure: "off" }).applyPassword("pw"),
+    ).resolves.toBeDefined();
+    const always = createRouterAdapter("mock", { failure: "always" });
+    await expect(always.applyPassword("pw")).rejects.toThrow(/simulated/);
+    await expect(always.applyPassword("pw")).rejects.toThrow(/simulated/);
+    const once = createRouterAdapter("mock", { failure: "first-attempt" });
+    await expect(once.applyPassword("pw")).rejects.toThrow(/simulated/);
+    await expect(once.applyPassword("pw")).resolves.toBeDefined();
+  });
 });
 
 describe("applyWithRetry", () => {

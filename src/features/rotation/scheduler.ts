@@ -8,6 +8,7 @@ import { RotationEvent, RotationSettings, ROTATION_SETTINGS_ID } from "@/lib/db/
 
 import {
   RotationInProgressError,
+  RotationSupersededError,
   rotateNetworkPassword,
   type RotateOptions,
   type RotationResult,
@@ -18,7 +19,7 @@ export const SCHEDULER_CRON = "* * * * *";
 
 export type SchedulerCheckResult =
   | Exclude<ScheduleDecision, { due: true }>
-  | { due: false; reason: "not-configured" | "in-progress" }
+  | { due: false; reason: "not-configured" | "in-progress" | "superseded" }
   | { due: true; result: RotationResult };
 
 type RotationOverrides = Omit<RotateOptions, "trigger" | "triggeredBy" | "source">;
@@ -54,10 +55,12 @@ export async function runScheduledRotationCheck(
       ...overrides,
       trigger: "SCHEDULED",
       source: "scheduler",
+      supersededAfter: lastSuccess?.createdAt ?? null,
     });
     return { due: true, result };
   } catch (error) {
     if (error instanceof RotationInProgressError) return { due: false, reason: "in-progress" };
+    if (error instanceof RotationSupersededError) return { due: false, reason: "superseded" };
     throw error;
   }
 }

@@ -1,4 +1,4 @@
-import { TEST_DATABASE_NAME } from "@/test/integration-db";
+import { clearTestDatabase, TEST_DATABASE_NAME } from "@/test/integration-db";
 
 import mongoose from "mongoose";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -10,14 +10,14 @@ describe("database (integration)", () => {
   beforeAll(async () => {
     await connectDb();
     for (const model of allModels) {
-      await model.deleteMany();
+      await model.collection.deleteMany({});
       await model.createCollection();
       await model.syncIndexes();
     }
   });
 
   afterAll(async () => {
-    for (const model of allModels) await model.deleteMany();
+    await clearTestDatabase();
     await disconnectDb();
   });
 

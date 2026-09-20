@@ -1,4 +1,4 @@
-import "@/test/integration-db";
+import { clearTestDatabase } from "@/test/integration-db";
 
 import { randomBytes } from "node:crypto";
 
@@ -30,11 +30,11 @@ describe("rotation engine (integration)", () => {
   });
 
   beforeEach(async () => {
-    for (const model of allModels) await model.deleteMany();
+    await clearTestDatabase();
   });
 
   afterAll(async () => {
-    for (const model of allModels) await model.deleteMany();
+    await clearTestDatabase();
     await disconnectDb();
   });
 
@@ -114,9 +114,10 @@ describe("rotation engine (integration)", () => {
     };
 
     const first = rotateNetworkPassword({ trigger: "SCHEDULED", adapter: slowAdapter });
-    await expect
-      .poll(() => RotationEvent.countDocuments({ status: "PENDING" }), { timeout: 10_000 })
-      .toBe(1);
+    // Wait until the rotation is actually inside the adapter call, so it is
+    // holding the "one rotation at a time" lock.
+    await expect.poll(() => typeof release === "function", { timeout: 15_000 }).toBe(true);
+    expect(await RotationEvent.countDocuments({ status: "PENDING" })).toBe(1);
 
     await expect(
       rotateNetworkPassword({ trigger: "MANUAL", adapter: new MockRouterAdapter() }),

@@ -1,11 +1,14 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Suspense } from "react";
 
 import { Button } from "@/components/ui/button";
 import { getSessionUser } from "@/features/auth/dal";
 
 import { logoutAction } from "../(auth)/actions";
+import { AdminAlerts } from "./admin-alerts";
 import { AdminNav } from "./admin-nav";
+import { AutoRefresh } from "./auto-refresh";
 
 export const metadata: Metadata = {
   title: { default: "Admin · PassCode", template: "%s · PassCode" },
@@ -25,6 +28,9 @@ export default async function AdminLayout({ children }: LayoutProps<"/admin">) {
           <AdminNav />
           {user && (
             <div className="ml-auto flex items-center gap-3 text-sm">
+              <Suspense fallback={null}>
+                <AdminAlerts />
+              </Suspense>
               <span className="text-muted-foreground">{user.email}</span>
               <form action={logoutAction}>
                 <Button type="submit" variant="outline" size="sm">
@@ -35,6 +41,7 @@ export default async function AdminLayout({ children }: LayoutProps<"/admin">) {
           )}
         </div>
       </header>
+      {user?.role === "ADMIN" && <AutoRefresh />}
       <main className="mx-auto w-full max-w-6xl flex-1 space-y-6 px-4 py-6">{children}</main>
     </div>
   );

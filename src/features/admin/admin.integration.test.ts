@@ -1,4 +1,4 @@
-import "@/test/integration-db";
+import { clearTestDatabase } from "@/test/integration-db";
 
 import { randomBytes } from "node:crypto";
 
@@ -51,13 +51,13 @@ describe("admin app services (integration)", () => {
   });
 
   beforeEach(async () => {
-    for (const model of allModels) await model.deleteMany();
+    await clearTestDatabase();
     const created = await users.bootstrapAdmin({ email: "admin@example.com", password: PASSWORD });
     admin = { id: created.id, email: created.email, role: "ADMIN", tokenVersion: 0 };
   });
 
   afterAll(async () => {
-    for (const model of allModels) await model.deleteMany();
+    await clearTestDatabase();
     await disconnectDb();
   });
 

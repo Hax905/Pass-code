@@ -68,6 +68,8 @@ This document answers the PRD's open questions with concrete defaults so develop
 ### 2.5 Secrets & Sensitive Data
 - **Current network password:** stored encrypted at rest (e.g., via a KMS-backed encryption key or, for v1, an application-level encryption key stored outside the repo/env-committed files). v1: AES-256-GCM with `PASSCODE_ENCRYPTION_KEY` (`src/lib/crypto/secret-box.ts`), stored in `rotation_events.passwordCiphertext`.
 - **Environment/config secrets:** `.env` (never committed), documented in `.env.example`
+- **Audit log:** append-only. Mongoose refuses every update and delete on `audit_log` (`AuditLogImmutableError`); inserts are the only allowed write. This is application-level: a demo doesn't use a restricted database user, so direct database access could still change it.
+- **Password requests:** `requestNetworkPassword` runs as one transaction that also writes the user document, so simultaneous requests for the same user are serialised and the 3-per-hour limit holds exactly.
 
 ### 2.6 Chatbot / AI Layer
 - **Provider:** Anthropic API (Claude), called server-side only — never from the client, to avoid exposing API keys and to keep authorization checks in one place
@@ -84,7 +86,7 @@ This document answers the PRD's open questions with concrete defaults so develop
 - **End-to-end:** Playwright (for the core flows in PRD §7: admin configures rotation, scheduled rotation, user requests password, unauthorized denial)
 
 ### 2.8 Deployment & Infrastructure
-- **Hosting:** Vercel (fits Next.js natively) or any Node-compatible host — decision not blocking, can be finalized at Phase 6
+- **Hosting:** *Decided 2026-09-16:* none. PassCode is a demo that runs locally (`npm run build && npm start`, or `npm run dev`) and is not deployed publicly.
 - **Database hosting:** MongoDB Atlas
 - **CI:** GitHub Actions — lint, typecheck, test on every push
 

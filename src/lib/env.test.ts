@@ -38,6 +38,14 @@ describe("getRotationEnv", () => {
     expect(env.PASSCODE_ENCRYPTION_KEY).toHaveLength(32);
     expect(env.ROUTER_ADAPTER).toBe("mock");
     expect(env.ROTATION_SCHEDULER_ENABLED).toBe(false);
+    expect(env.VIRTUAL_ROUTER_FAILURE).toBe("off");
+    expect(() =>
+      getRotationEnv({
+        PASSCODE_ENCRYPTION_KEY: key,
+        VIRTUAL_ROUTER_FAILURE: "sometimes",
+        NODE_ENV: "test",
+      }),
+    ).toThrow(/VIRTUAL_ROUTER_FAILURE/);
   });
 
   it("requires a 32-byte key", () => {

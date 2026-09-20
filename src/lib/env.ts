@@ -14,6 +14,7 @@ export const serverEnvSchema = z.object({
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
 
 export const ROUTER_ADAPTERS = ["mock"] as const;
+export const VIRTUAL_ROUTER_FAILURE_MODES = ["off", "always", "first-attempt"] as const;
 
 // Phase 1 — rotation engine. Validated separately so code that only needs the
 // database doesn't require the encryption key.
@@ -26,6 +27,9 @@ export const rotationEnvSchema = z.object({
     )
     .transform((value) => Buffer.from(value, "base64")),
   ROUTER_ADAPTER: z.enum(ROUTER_ADAPTERS).default("mock"),
+  // Demo/testing switch: make the virtual router fail on every attempt, or
+  // only on the first one (the automatic retry then succeeds).
+  VIRTUAL_ROUTER_FAILURE: z.enum(VIRTUAL_ROUTER_FAILURE_MODES).default("off"),
   // Runs the scheduler inside the Next.js server (see src/instrumentation.ts).
   ROTATION_SCHEDULER_ENABLED: z
     .enum(["true", "false"])

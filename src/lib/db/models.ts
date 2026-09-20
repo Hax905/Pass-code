@@ -36,6 +36,9 @@ const userSchema = new Schema(
     // revocation takes effect immediately even though sessions are JWTs.
     tokenVersion: { type: Number, required: true, default: 0, min: 0 },
     revokedAt: { type: Date },
+    // Bumped inside every password request's transaction, so two requests for
+    // the same user conflict and run one after the other (exact rate limit).
+    passwordRequestSeq: { type: Number, min: 0 },
   },
   { timestamps: true, strict: "throw" },
 );
@@ -114,6 +117,39 @@ auditLogSchema.index({ actor: 1, createdAt: -1 });
 auditLogSchema.index({ action: 1, createdAt: -1 });
 // Failed-login throttling looks up recent failures per email.
 auditLogSchema.index({ action: 1, target: 1, createdAt: -1 });
+
+export class AuditLogImmutableError extends Error {
+  constructor() {
+    super("The audit log is append-only: entries can't be changed or deleted");
+    this.name = "AuditLogImmutableError";
+  }
+}
+
+// Append-only (PRD §8). Blocks every update and delete that goes through
+// Mongoose; inserts are the only allowed write. Tests clear the collection
+// through the raw driver (`AuditLog.collection`), which a production code path
+// never does.
+function refuseChange() {
+  throw new AuditLogImmutableError();
+}
+for (const op of [
+  "updateOne",
+  "updateMany",
+  "replaceOne",
+  "findOneAndUpdate",
+  "findOneAndReplace",
+  "deleteOne",
+  "deleteMany",
+  "findOneAndDelete",
+] as const) {
+  auditLogSchema.pre(op, { document: true, query: true }, refuseChange);
+}
+auditLogSchema.pre("save", function () {
+  if (!this.isNew) refuseChange();
+});
+auditLogSchema.pre("bulkWrite", function (ops) {
+  if (ops.some((op) => !("insertOne" in op))) refuseChange();
+});
 
 export const User = model("User", userSchema, "users");
 export const RotationEvent = model("RotationEvent", rotationEventSchema, "rotation_events");

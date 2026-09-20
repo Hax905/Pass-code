@@ -1,4 +1,4 @@
-import "@/test/integration-db";
+import { clearTestDatabase } from "@/test/integration-db";
 
 import { randomBytes } from "node:crypto";
 
@@ -82,7 +82,7 @@ describe("chatbot (integration)", () => {
   });
 
   beforeEach(async () => {
-    for (const model of allModels) await model.deleteMany();
+    await clearTestDatabase();
     const a = await users.bootstrapAdmin({ email: "admin@example.com", password: PASSWORD });
     admin = { id: a.id, email: a.email, role: "ADMIN", tokenVersion: 0 };
     const u = await users.provisionUser(admin, {
@@ -94,7 +94,7 @@ describe("chatbot (integration)", () => {
   });
 
   afterAll(async () => {
-    for (const model of allModels) await model.deleteMany();
+    await clearTestDatabase();
     await disconnectDb();
   });
 

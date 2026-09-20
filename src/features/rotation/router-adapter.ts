@@ -1,7 +1,7 @@
 // Boundary between PassCode and the network hardware (STYLES.md §1).
 // Password rotation is the only hardware capability PassCode may use: do not
 // add firmware, port, traffic or other device operations here (PROMPT.md).
-import type { ROUTER_ADAPTERS } from "@/lib/env";
+import type { ROUTER_ADAPTERS, VIRTUAL_ROUTER_FAILURE_MODES } from "@/lib/env";
 
 import { MockRouterAdapter } from "./mock-router-adapter";
 
@@ -22,9 +22,15 @@ export interface RouterAdapter {
   applyPassword(password: string): Promise<ApplyPasswordResult>;
 }
 
-export function createRouterAdapter(name: RouterAdapterName): RouterAdapter {
+export function createRouterAdapter(
+  name: RouterAdapterName,
+  options: { failure?: (typeof VIRTUAL_ROUTER_FAILURE_MODES)[number] } = {},
+): RouterAdapter {
   switch (name) {
     case "mock":
-      return new MockRouterAdapter();
+      return new MockRouterAdapter({
+        alwaysFail: options.failure === "always",
+        failFirst: options.failure === "first-attempt" ? 1 : 0,
+      });
   }
 }
