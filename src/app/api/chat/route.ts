@@ -1,16 +1,17 @@
-import Anthropic from "@anthropic-ai/sdk";
 import type { NextRequest } from "next/server";
 
 import { auth } from "@/auth";
 import { isSameOrigin, jsonError } from "@/features/auth/route-guard";
 import { resolveChatAccess } from "@/features/chat/access";
 import { chatHistorySchema, runChatTurn } from "@/features/chat/chat-service";
+import { createChatProvider, ChatProviderError } from "@/features/chat/providers";
+import type { ChatModelProvider } from "@/features/chat/providers";
 import { userMessageLimiter } from "@/features/chat/rate-limit";
 import { getChatEnv } from "@/lib/env";
 
 const NO_STORE = { "Cache-Control": "no-store" };
 
-let client: Anthropic | undefined;
+let provider: ChatModelProvider | undefined;
 
 /**
  * POST { messages: [{ role, content }, ...] } → { reply, reveal? }.
@@ -55,18 +56,18 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    client ??= new Anthropic();
-    const result = await runChatTurn({ user: access.user, history: parsed.data, client, ip });
+    provider ??= createChatProvider();
+    const result = await runChatTurn({ user: access.user, history: parsed.data, provider, ip });
     return Response.json(result, { headers: NO_STORE });
   } catch (error) {
-    if (error instanceof Anthropic.RateLimitError) {
+    if (error instanceof ChatProviderError && error.retryable) {
       return Response.json(
         { reply: "The assistant is busy right now. Please try again in a minute." },
         { status: 503, headers: NO_STORE },
       );
     }
-    // API failures, missing credentials (the SDK throws a plain Error for
-    // those) and database errors: log the details, show a generic message.
+    // API failures, missing credentials and database errors: log the details,
+    // show a generic message.
     console.error("[chat] turn failed:", error instanceof Error ? error.message : error);
     return Response.json(
       { reply: "The assistant isn't available right now. Please try again later." },

@@ -10,11 +10,11 @@ Project planning lives in [PRD.md](PRD.md), [STYLES.md](STYLES.md) and [TASKLIST
 
 ## Stack
 
-Next.js 16 (TypeScript, App Router) · Tailwind CSS 4 + shadcn/ui · MongoDB (Atlas) + Mongoose · Zod · Auth.js · Claude (Anthropic API) · Vitest + Playwright
+Next.js 16 (TypeScript, App Router) · Tailwind CSS 4 + shadcn/ui · MongoDB (Atlas) + Mongoose · Zod · Auth.js · Gemini or Claude (`CHAT_PROVIDER`) · Vitest + Playwright
 
 ## Run the demo
 
-With `.env` filled in as described below (`DATABASE_URL`, `PASSCODE_ENCRYPTION_KEY`, `AUTH_SECRET`, `AUTH_URL`, and `ANTHROPIC_API_KEY` for the assistant):
+With `.env` filled in as described below (`DATABASE_URL`, `PASSCODE_ENCRYPTION_KEY`, `AUTH_SECRET`, `AUTH_URL`, and `GEMINI_API_KEY` for the assistant):
 
 ```bash
 npm install
@@ -38,7 +38,13 @@ Requires Node.js 24+.
 4. `npm run db:sync` — creates collections and indexes.
 5. Set `AUTH_SECRET` (`npx auth secret`, or `openssl rand -base64 33`) and `AUTH_URL`.
 6. `npm run user:create-admin -- --email you@example.com` creates the first admin (you'll be asked for a password).
-   For the assistant at `/chat`, also set `ANTHROPIC_API_KEY` (and optionally `PASSCODE_NETWORK_NAME` and `PASSCODE_SUPPORT_CONTACT`).
+   For the assistant at `/chat`, also set the model provider (and optionally `PASSCODE_NETWORK_NAME` and `PASSCODE_SUPPORT_CONTACT`):
+
+   - `CHAT_PROVIDER=gemini` (default) with `GEMINI_API_KEY` from Google AI Studio. The free tier is rate- and capacity-limited: requests come back 503 under load and 429 once a model's daily quota is gone, so `GEMINI_MODELS` lists distinct models to try in order. Note that Google's free tier may use submitted content for product improvement — the password never reaches the model, but chat text does.
+   - `CHAT_PROVIDER=anthropic` with `ANTHROPIC_API_KEY`, which needs paid API credits.
+
+   `npm run chat:live-check` verifies the configured provider end to end against a `_demo`/`_test` database.
+
 7. `npm run dev` — http://localhost:3000
 
 ## Scripts

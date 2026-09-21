@@ -1,6 +1,4 @@
-import type Anthropic from "@anthropic-ai/sdk";
-
-export const CHAT_MODEL = "claude-opus-5";
+import type { ToolSpec } from "./providers/types";
 
 export const TOOL_NAMES = {
   showPassword: "show_network_password",
@@ -34,26 +32,30 @@ What you don't do:
 Style: reply in the person's language, in plain text without Markdown, usually in one to four sentences.`;
 }
 
-export const CHAT_TOOLS: Anthropic.Beta.BetaTool[] = [
+const NO_ARGUMENTS: ToolSpec["parameters"] = {
+  type: "object",
+  properties: {},
+  required: [],
+  additionalProperties: false,
+};
+
+export const CHAT_TOOLS: ToolSpec[] = [
   {
     name: TOOL_NAMES.showPassword,
     description:
       "Shows the current Wi-Fi password to the signed-in person in a secure panel of the app and logs the request. Call it whenever they ask for the password. The result tells you whether it was shown; it never contains the password.",
-    input_schema: { type: "object", properties: {}, required: [], additionalProperties: false },
-    strict: true,
+    parameters: NO_ARGUMENTS,
   },
   {
     name: TOOL_NAMES.rotationInfo,
     description:
       "Returns when the Wi-Fi password last changed, whether it changes automatically, and roughly when it changes next. Never includes the password.",
-    input_schema: { type: "object", properties: {}, required: [], additionalProperties: false },
-    strict: true,
+    parameters: NO_ARGUMENTS,
   },
   {
     name: TOOL_NAMES.myRequests,
     description:
       "Returns the signed-in person's own recent password requests (times and results) and how many more they can make this hour. Use it for personalised tips.",
-    input_schema: { type: "object", properties: {}, required: [], additionalProperties: false },
-    strict: true,
+    parameters: NO_ARGUMENTS,
   },
 ];

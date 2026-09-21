@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { denialReply } from "./access";
 import { chatHistorySchema, MAX_MESSAGE_CHARS, MAX_TURNS } from "./chat-service";
-import { buildSystemPrompt, CHAT_MODEL, CHAT_TOOLS, TOOL_NAMES } from "./prompt";
+import { buildSystemPrompt, CHAT_TOOLS, TOOL_NAMES } from "./prompt";
+import { ANTHROPIC_CHAT_MODEL } from "./providers/anthropic";
+import { DEFAULT_GEMINI_MODELS } from "./providers/gemini";
 import { SlidingWindowLimiter } from "./rate-limit";
 
 const user = (content: string) => ({ role: "user" as const, content });
@@ -45,15 +47,23 @@ describe("SlidingWindowLimiter", () => {
 });
 
 describe("prompt and tools", () => {
-  it("uses Claude Opus 5 and strict, input-free tools", () => {
-    expect(CHAT_MODEL).toBe("claude-opus-5");
+  it("declares input-free tools that every provider can translate", () => {
     expect(CHAT_TOOLS.map((t) => t.name)).toEqual(Object.values(TOOL_NAMES));
     for (const tool of CHAT_TOOLS) {
-      expect(tool).toMatchObject({
-        strict: true,
-        input_schema: { type: "object", properties: {}, required: [], additionalProperties: false },
+      expect(tool.description).toBeTruthy();
+      expect(tool.parameters).toEqual({
+        type: "object",
+        properties: {},
+        required: [],
+        additionalProperties: false,
       });
     }
+  });
+
+  it("pins the model each provider uses", () => {
+    expect(ANTHROPIC_CHAT_MODEL).toBe("claude-opus-5");
+    expect(DEFAULT_GEMINI_MODELS[0]).toBe("gemini-3.8-flash");
+    expect(DEFAULT_GEMINI_MODELS.length).toBeGreaterThan(1);
   });
 
   it("is identical for every user and includes the configured network and contact", () => {

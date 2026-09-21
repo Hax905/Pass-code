@@ -1,8 +1,9 @@
 // One chat turn (PRD §6.3). The caller must already have authorized the user;
 // this module never decides who may use the chatbot.
-import Anthropic from "@anthropic-ai/sdk";
+//
+// The model is reached through a provider seam (`./providers`), so switching
+// vendors can't move the authorization gate or the tools out of our code.
 import type { Types } from "mongoose";
-import { z } from "zod";
 
 import type { AuthorizedUser } from "@/features/auth/types";
 import { describeSchedule } from "@/features/admin/format";
@@ -11,43 +12,14 @@ import { connectDb } from "@/lib/db/connection";
 import { PasswordRequest } from "@/lib/db/models";
 import { getChatEnv } from "@/lib/env";
 
+import { type ChatHistory } from "./history";
 import { REVEAL_LIMIT, requestNetworkPassword } from "./password-access";
-import { buildSystemPrompt, CHAT_MODEL, CHAT_TOOLS, TOOL_NAMES } from "./prompt";
+import { buildSystemPrompt, CHAT_TOOLS, TOOL_NAMES } from "./prompt";
+import type { ChatModelProvider, ToolOutcome } from "./providers/types";
 
-export const MAX_TURNS = 20;
-export const MAX_MESSAGE_CHARS = 2000;
+export { chatHistorySchema, MAX_TURNS, MAX_MESSAGE_CHARS, type ChatHistory } from "./history";
+
 const MAX_TOOL_ROUNDS = 5;
-
-// The browser sends plain text turns only. Tool calls and results are never
-// accepted from the client, so a tampered history can't fake a tool result.
-export const chatHistorySchema = z
-  .array(
-    z.object({
-      role: z.enum(["user", "assistant"]),
-      content: z.string().trim().min(1).max(MAX_MESSAGE_CHARS),
-    }),
-  )
-  .min(1)
-  .max(MAX_TURNS)
-  .refine((turns) => turns.every((t, i) => t.role === (i % 2 === 0 ? "user" : "assistant")), {
-    message: "Turns must alternate, starting with the user",
-  })
-  .refine((turns) => turns.at(-1)?.role === "user", {
-    message: "The last turn must be from the user",
-  });
-
-export type ChatHistory = z.infer<typeof chatHistorySchema>;
-
-/** The part of the Anthropic client this module uses (lets tests pass a fake). */
-export interface ChatClient {
-  beta: {
-    messages: {
-      create(
-        params: Anthropic.Beta.MessageCreateParamsNonStreaming,
-      ): Promise<Anthropic.Beta.BetaMessage>;
-    };
-  };
-}
 
 export interface ChatResult {
   reply: string;
@@ -61,77 +33,45 @@ export const REFUSAL_REPLY =
 export async function runChatTurn(options: {
   user: AuthorizedUser;
   history: ChatHistory;
-  client: ChatClient;
+  provider: ChatModelProvider;
   ip?: string;
   now?: Date;
 }): Promise<ChatResult> {
-  const { user, client } = options;
+  const { user, provider } = options;
   const env = getChatEnv();
-  const messages: Anthropic.Beta.BetaMessageParam[] = options.history.map((turn) => ({
-    role: turn.role,
-    content: turn.content,
-  }));
+  const system = [
+    buildSystemPrompt({
+      ...(env.PASSCODE_NETWORK_NAME ? { networkName: env.PASSCODE_NETWORK_NAME } : {}),
+      ...(env.PASSCODE_SUPPORT_CONTACT ? { supportContact: env.PASSCODE_SUPPORT_CONTACT } : {}),
+    }),
+    // User-entered text: quoted as data, not instructions.
+    `The person's display name, as they entered it: ${JSON.stringify(user.name ?? "")}`,
+  ].join("\n\n");
+
+  const session = provider.start({ system, history: options.history, tools: CHAT_TOOLS });
   let reveal: ChatResult["reveal"];
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const response = await client.beta.messages.create({
-      model: CHAT_MODEL,
-      max_tokens: 16000,
-      // Server-side fallback: a request declined by Claude Opus 5's safety
-      // classifiers is retried on Anthropic's recommended fallback model.
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-      // Short conversational answers don't need deep reasoning.
-      output_config: { effort: "low" },
-      cache_control: { type: "ephemeral" },
-      system: [
-        {
-          type: "text",
-          text: buildSystemPrompt({
-            networkName: env.PASSCODE_NETWORK_NAME,
-            supportContact: env.PASSCODE_SUPPORT_CONTACT,
-          }),
-        },
-        {
-          type: "text",
-          // User-entered text: quoted as data, not instructions.
-          text: `The person's display name, as they entered it: ${JSON.stringify(user.name ?? "")}`,
-        },
-      ],
-      tools: CHAT_TOOLS,
-      messages,
-    });
+    const reply = await session.send();
 
-    if (response.stop_reason === "refusal") return { reply: REFUSAL_REPLY, reveal };
+    if (reply.type === "refusal") return { reply: REFUSAL_REPLY, reveal };
 
-    if (response.stop_reason === "pause_turn") {
-      messages.push({ role: "assistant", content: response.content });
-      continue;
+    if (reply.type === "text") {
+      return { reply: reply.text || "Sorry, I don't have an answer for that.", reveal };
     }
 
-    if (response.stop_reason !== "tool_use") {
-      const text = response.content
-        .flatMap((block) => (block.type === "text" ? [block.text] : []))
-        .join("\n")
-        .trim();
-      return { reply: text || "Sorry, I don't have an answer for that.", reveal };
-    }
-
-    // Keep thinking and tool_use blocks exactly as returned.
-    messages.push({ role: "assistant", content: response.content });
-    const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
-    for (const block of response.content) {
-      if (block.type !== "tool_use") continue;
-      const { text, granted } = await runTool(block.name, {
+    const results: ToolOutcome[] = [];
+    for (const call of reply.calls) {
+      const { text, granted } = await runTool(call.name, {
         user,
-        ip: options.ip,
-        now: options.now,
+        ...(options.ip ? { ip: options.ip } : {}),
+        ...(options.now ? { now: options.now } : {}),
         alreadyShown: reveal !== undefined,
       });
       if (granted) reveal = granted;
-      results.push({ type: "tool_result", tool_use_id: block.id, content: text });
+      results.push({ ...(call.id ? { id: call.id } : {}), name: call.name, text });
     }
-    messages.push({ role: "user", content: results });
+    session.provideToolResults(results);
   }
 
   return {
@@ -154,7 +94,7 @@ async function runTool(
       }
       const result = await requestNetworkPassword(
         { userId: context.user.id, tokenVersion: context.user.tokenVersion },
-        { ip: context.ip, now },
+        { ...(context.ip ? { ip: context.ip } : {}), now },
       );
       if (result.ok) {
         return {

@@ -2,8 +2,11 @@ import { clearTestDatabase } from "@/test/integration-db";
 
 import { randomBytes } from "node:crypto";
 
-import type Anthropic from "@anthropic-ai/sdk";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+
+type ModelReply = import("./providers/types").ModelReply;
+type ToolOutcome = import("./providers/types").ToolOutcome;
+type ChatModelProvider = import("./providers/types").ChatModelProvider;
 
 process.env.PASSCODE_ENCRYPTION_KEY = randomBytes(32).toString("base64");
 
@@ -26,47 +29,49 @@ let alice: AuthorizedUser;
 let ipCounter = 0;
 const freshIp = () => `10.1.0.${++ipCounter}`;
 
-/** A fake Claude: returns the scripted responses in order and records every request. */
-function fakeClient(script: Array<Partial<Anthropic.Beta.BetaMessage>>) {
+/**
+ * A fake model: returns the scripted replies in order and records everything
+ * the turn would have sent. Provider-neutral, so it covers the shared loop;
+ * the wire format of each vendor is tested in providers.test.ts.
+ */
+function fakeProvider(script: ModelReply[]) {
   const requests: string[] = [];
-  const params: Anthropic.Beta.MessageCreateParamsNonStreaming[] = [];
+  const toolResults: ToolOutcome[][] = [];
   let index = 0;
-  return {
+  const provider: ChatModelProvider & {
+    requests: string[];
+    toolResults: ToolOutcome[][];
+    systemPrompt: string;
+  } = {
+    id: "fake",
+    model: "fake-model",
     requests,
-    params,
-    beta: {
-      messages: {
-        async create(p: Anthropic.Beta.MessageCreateParamsNonStreaming) {
-          // Snapshot now: the service keeps appending to the same array.
-          requests.push(JSON.stringify(p));
-          params.push(JSON.parse(JSON.stringify(p)));
-          const next = script[Math.min(index++, script.length - 1)];
-          return {
-            id: `msg_${index}`,
-            type: "message",
-            role: "assistant",
-            model: "claude-opus-5",
-            stop_sequence: null,
-            usage: { input_tokens: 1, output_tokens: 1 },
-            ...next,
-          } as unknown as Anthropic.Beta.BetaMessage;
+    toolResults,
+    systemPrompt: "",
+    start({ system, history, tools }) {
+      provider.systemPrompt = system;
+      const results: ToolOutcome[][] = [];
+      return {
+        async send() {
+          // Snapshot everything the model would see on this round.
+          requests.push(JSON.stringify({ system, history, tools, results }));
+          return script[Math.min(index++, script.length - 1)];
         },
-      },
+        provideToolResults(next: ToolOutcome[]) {
+          results.push(next);
+          toolResults.push(next);
+        },
+      };
     },
   };
+  return provider;
 }
 
-const callTool = (name: string, id = "toolu_1"): Partial<Anthropic.Beta.BetaMessage> => ({
-  stop_reason: "tool_use",
-  content: [
-    { type: "text", text: "Let me check.", citations: null },
-    { type: "tool_use", id, name, input: {} },
-  ] as Anthropic.Beta.BetaContentBlock[],
+const callTool = (name: string, id = "toolu_1"): ModelReply => ({
+  type: "tool_calls",
+  calls: [{ id, name }],
 });
-const say = (text: string): Partial<Anthropic.Beta.BetaMessage> => ({
-  stop_reason: "end_turn",
-  content: [{ type: "text", text, citations: null }] as Anthropic.Beta.BetaContentBlock[],
-});
+const say = (text: string): ModelReply => ({ type: "text", text });
 
 async function rotate() {
   return rotateNetworkPassword({ trigger: "MANUAL", adapter: new MockRouterAdapter() });
@@ -216,38 +221,31 @@ describe("chatbot (integration)", () => {
     it("shows the password outside the model's view and logs the request", async () => {
       await rotate();
       const { password } = (await getCurrentNetworkPassword())!;
-      const client = fakeClient([callTool(TOOL_NAMES.showPassword), say("It's shown below.")]);
+      const fake = fakeProvider([callTool(TOOL_NAMES.showPassword), say("It's shown below.")]);
 
-      const result = await runChatTurn({ user: alice, history, client, ip: "10.0.0.9" });
+      const result = await runChatTurn({ user: alice, history, provider: fake, ip: "10.0.0.9" });
 
       expect(result.reply).toBe("It's shown below.");
       expect(result.reveal?.password).toBe(password);
       expect(await PasswordRequest.countDocuments({ granted: true, user: alice.id })).toBe(1);
       // Nothing sent to the model contains the password.
-      expect(client.requests).toHaveLength(2);
-      for (const request of client.requests) expect(request).not.toContain(password);
-      const toolResult = client.params[1].messages.at(-1)!;
-      expect(JSON.stringify(toolResult)).toMatch(/Shown\..*don't know it/);
+      expect(fake.requests).toHaveLength(2);
+      for (const request of fake.requests) expect(request).not.toContain(password);
+      expect(JSON.stringify(fake.toolResults[0])).toMatch(/Shown\..*don't know it/);
     });
 
-    it("sends the expected request shape", async () => {
-      const client = fakeClient([say("Hi!")]);
-      await runChatTurn({ user: alice, history, client });
-      const [params] = client.params;
-      expect(params).toMatchObject({
-        model: "claude-opus-5",
-        betas: ["server-side-fallback-2026-07-01"],
-        fallbacks: "default",
-        output_config: { effort: "low" },
-        messages: history,
-      });
-      expect(params.tools?.map((t) => ("name" in t ? t.name : undefined))).toEqual(
-        Object.values(TOOL_NAMES),
-      );
-      expect(JSON.stringify(params.system)).toContain(
-        'display name, as they entered it: \\"Alice\\"',
-      );
-      expect(params).not.toHaveProperty("thinking");
+    it("gives the model the prompt, tools and history, and nothing else", async () => {
+      const fake = fakeProvider([say("Hi!")]);
+      await runChatTurn({ user: alice, history, provider: fake });
+      const sent = JSON.parse(fake.requests[0]) as {
+        system: string;
+        history: typeof history;
+        tools: { name: string }[];
+      };
+      expect(sent.history).toEqual(history);
+      expect(sent.tools.map((t) => t.name)).toEqual(Object.values(TOOL_NAMES));
+      expect(sent.system).toContain('display name, as they entered it: "Alice"');
+      expect(sent.system).toContain("never write, guess or invent a password");
     });
 
     it("tells the model about the limit instead of showing the password", async () => {
@@ -255,17 +253,17 @@ describe("chatbot (integration)", () => {
       for (let i = 0; i < REVEAL_LIMIT.max; i++) {
         await requestNetworkPassword({ userId: alice.id, tokenVersion: 0 });
       }
-      const client = fakeClient([callTool(TOOL_NAMES.showPassword), say("You've hit the limit.")]);
-      const result = await runChatTurn({ user: alice, history, client });
+      const fake = fakeProvider([callTool(TOOL_NAMES.showPassword), say("You've hit the limit.")]);
+      const result = await runChatTurn({ user: alice, history, provider: fake });
       expect(result.reveal).toBeUndefined();
-      expect(JSON.stringify(client.params[1].messages.at(-1))).toContain("Not shown");
+      expect(JSON.stringify(fake.toolResults[0])).toContain("Not shown");
     });
 
     it("never shows the password to a user revoked mid-conversation", async () => {
       await rotate();
       await users.revokeUser(admin, alice.id);
-      const client = fakeClient([callTool(TOOL_NAMES.showPassword), say("Sorry.")]);
-      const result = await runChatTurn({ user: alice, history, client });
+      const fake = fakeProvider([callTool(TOOL_NAMES.showPassword), say("Sorry.")]);
+      const result = await runChatTurn({ user: alice, history, provider: fake });
       expect(result.reveal).toBeUndefined();
       expect(await PasswordRequest.findOne().lean()).toMatchObject({
         granted: false,
@@ -275,15 +273,15 @@ describe("chatbot (integration)", () => {
 
     it("shows the password at most once per turn", async () => {
       await rotate();
-      const client = fakeClient([
+      const fake = fakeProvider([
         callTool(TOOL_NAMES.showPassword, "toolu_1"),
         callTool(TOOL_NAMES.showPassword, "toolu_2"),
         say("Done."),
       ]);
-      const result = await runChatTurn({ user: alice, history, client });
+      const result = await runChatTurn({ user: alice, history, provider: fake });
       expect(result.reveal).toBeDefined();
       expect(await PasswordRequest.countDocuments({ granted: true })).toBe(1);
-      expect(JSON.stringify(client.params[2].messages.at(-1))).toContain("already shown");
+      expect(JSON.stringify(fake.toolResults[1])).toContain("already shown");
     });
 
     it("answers rotation and history questions with the person's own data only", async () => {
@@ -310,19 +308,19 @@ describe("chatbot (integration)", () => {
         { user: bob.id, granted: false, denialReason: "RATE_LIMITED" },
       ]);
 
-      const client = fakeClient([
+      const fake = fakeProvider([
         callTool(TOOL_NAMES.rotationInfo, "toolu_a"),
         callTool(TOOL_NAMES.myRequests, "toolu_b"),
         say("Here you go."),
       ]);
-      await runChatTurn({ user: alice, history, client });
+      await runChatTurn({ user: alice, history, provider: fake });
 
-      const rotationResult = JSON.stringify(client.params[1].messages.at(-1));
+      const rotationResult = JSON.stringify(fake.toolResults[0]);
       expect(rotationResult).toContain("Every week (UTC)");
-      const historyResult = JSON.stringify(client.params[2].messages.at(-1));
+      const historyResult = JSON.stringify(fake.toolResults[1]);
       expect(historyResult).toContain('\\"remainingThisHour\\":2');
       expect(historyResult).not.toContain("RATE_LIMITED");
-      for (const request of client.requests) {
+      for (const request of fake.requests) {
         expect(request).not.toContain(password);
         expect(request).not.toMatch(/v1:|ciphertext|bob@example/i);
       }
@@ -330,25 +328,25 @@ describe("chatbot (integration)", () => {
 
     it("returns a fixed message when the model declines", async () => {
       await rotate();
-      const client = fakeClient([{ stop_reason: "refusal", content: [] }]);
-      expect(await runChatTurn({ user: alice, history, client })).toEqual({
+      const fake = fakeProvider([{ type: "refusal" }]);
+      expect(await runChatTurn({ user: alice, history, provider: fake })).toEqual({
         reply: REFUSAL_REPLY,
         reveal: undefined,
       });
     });
 
     it("gives up after a bounded number of tool rounds", async () => {
-      const client = fakeClient([callTool(TOOL_NAMES.rotationInfo)]);
-      const result = await runChatTurn({ user: alice, history, client });
+      const fake = fakeProvider([callTool(TOOL_NAMES.rotationInfo)]);
+      const result = await runChatTurn({ user: alice, history, provider: fake });
       expect(result.reply).toMatch(/couldn't finish/);
-      expect(client.requests).toHaveLength(5);
+      expect(fake.requests).toHaveLength(5);
     });
 
     it("never trusts the stored user object over the database", async () => {
       await rotate();
       await User.updateOne({ _id: alice.id }, { $inc: { tokenVersion: 1 } });
-      const client = fakeClient([callTool(TOOL_NAMES.showPassword), say("Sorry.")]);
-      const result = await runChatTurn({ user: alice, history, client });
+      const fake = fakeProvider([callTool(TOOL_NAMES.showPassword), say("Sorry.")]);
+      const result = await runChatTurn({ user: alice, history, provider: fake });
       expect(result.reveal).toBeUndefined();
     });
   });

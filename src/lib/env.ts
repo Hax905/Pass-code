@@ -39,10 +39,27 @@ export const rotationEnvSchema = z.object({
 
 export type RotationEnv = z.infer<typeof rotationEnvSchema>;
 
-// Phase 4 — chatbot. The Anthropic SDK reads ANTHROPIC_API_KEY itself; the
-// other values only personalise the assistant's answers.
+export const CHAT_PROVIDERS = ["gemini", "anthropic"] as const;
+
+// Phase 4 — chatbot. Which model backs the assistant is a deployment choice
+// (STYLES.md §2.6); the authorization gate and tools are the same either way.
+// The other values only personalise the assistant's answers.
 export const chatEnvSchema = z.object({
+  CHAT_PROVIDER: z.enum(CHAT_PROVIDERS).default("gemini"),
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
+  GEMINI_API_KEY: z.string().min(1).optional(),
+  // Comma-separated, tried in order: the free tier answers 503 per model.
+  GEMINI_MODELS: z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .transform((value) =>
+      value
+        ?.split(",")
+        .map((model) => model.trim())
+        .filter(Boolean),
+    ),
   PASSCODE_NETWORK_NAME: z.string().trim().min(1).max(64).optional(),
   PASSCODE_SUPPORT_CONTACT: z.string().trim().min(1).max(200).optional(),
 });
