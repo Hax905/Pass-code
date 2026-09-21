@@ -18,27 +18,40 @@ import {
   type ToolSpec,
 } from "./types";
 
-// Tried in order; a 503/429/connection drop moves on to the next one. Each
-// entry must be a distinct model that currently serves generateContent:
+// Tried in order; a 503/429/timeout/connection drop moves on to the next one.
+//
+// The lead model decides the assistant's latency, because a password request
+// costs two round trips (one to call the tool, one to phrase the reply). A
+// lite model is the right lead here: the answers are a few sentences of
+// plain text, so the extra capability of a larger model buys nothing, and
+// measured against the same prompts it replies in ~1-2 s where the larger
+// flash models take 7-14 s. The bigger models stay on as fallback capacity.
+//
+// Each entry must be a distinct model that currently serves generateContent:
 // - an alias (`gemini-flash-latest`) shares the newest model's quota bucket,
 //   so it adds a step to the walk without adding capacity;
 // - a retired model answers 404, which is not retryable and ends the walk.
-// Verified 2026-09-20: 3.5-flash-lite through 3.8-flash serve; 2.5-flash is
-// retired although the models list still advertises it.
+// Verified 2026-09-21: all five serve; 2.5-flash is retired although the
+// models list still advertises it.
 export const DEFAULT_GEMINI_MODELS = [
-  "gemini-3.8-flash",
+  "gemini-3.5-flash-lite",
   "gemini-3.7-flash",
   "gemini-3.6-flash",
   "gemini-3.5-flash",
-  "gemini-3.5-flash-lite",
+  "gemini-3.8-flash",
 ] as const;
 
 const RETRY_PASSES = 2;
 const RETRY_DELAY_MS = 1500;
-// A stalled request has to fail over to the next model rather than hang the
-// whole chat turn: Google can accept the connection and then go quiet, which
-// no HTTP status or socket error ever surfaces.
-const REQUEST_TIMEOUT_MS = 15_000;
+// Two budgets, because one number cannot do this job. A request has to fail
+// over rather than hang the turn (Google can accept the connection and then go
+// quiet, which no HTTP status or socket error surfaces), but the free tier is
+// also just slow under load — measured on the same prompt, one model answered
+// in 0.7 s at one hour and 19 s at the next. So the per-attempt timeout is
+// generous enough not to kill a slow-but-working answer, and a separate
+// deadline bounds what the person actually waits for: the whole walk.
+const REQUEST_TIMEOUT_MS = 30_000;
+const WALK_BUDGET_MS = 45_000;
 
 /** One model took too long. Retryable: the next model may well answer. */
 class GeminiTimeoutError extends Error {
@@ -135,6 +148,7 @@ class GeminiSession implements ChatModelSession {
     private readonly models: readonly string[],
     private readonly delayMs: number,
     private readonly timeoutMs: number,
+    private readonly budgetMs: number,
   ) {
     this.contents = history.map((turn) => ({
       role: turn.role === "assistant" ? "model" : "user",
@@ -160,8 +174,14 @@ class GeminiSession implements ChatModelSession {
   /** Walks the model list on capacity errors; anything else fails straight away. */
   private async generate(): Promise<GenerateContentResponse> {
     let last: unknown;
+    const deadline = this.budgetMs > 0 ? Date.now() + this.budgetMs : Infinity;
     for (let pass = 0; pass < RETRY_PASSES; pass++) {
       for (const model of this.models) {
+        // Never start an attempt there is no time left for.
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          return this.giveUp(last);
+        }
         try {
           return await withTimeout(
             this.client.models.generateContent({
@@ -169,7 +189,7 @@ class GeminiSession implements ChatModelSession {
               contents: this.contents,
               config: this.config,
             }),
-            this.timeoutMs,
+            this.timeoutMs > 0 ? Math.min(this.timeoutMs, remaining) : remaining,
             model,
           );
         } catch (error) {
@@ -187,6 +207,11 @@ class GeminiSession implements ChatModelSession {
         await new Promise((resolve) => setTimeout(resolve, this.delayMs));
       }
     }
+    return this.giveUp(last);
+  }
+
+  /** Every model refused or ran out of time; the caller answers "busy". */
+  private giveUp(last: unknown): never {
     throw new ChatProviderError(
       last instanceof Error ? last.message : "Gemini is unavailable",
       statusOf(last) ?? 503,
@@ -242,6 +267,8 @@ export function createGeminiProvider(options: {
   retryDelayMs?: number;
   /** Per-attempt budget; 0 disables the timeout. */
   requestTimeoutMs?: number;
+  /** Budget for the whole model walk; 0 disables the deadline. */
+  walkBudgetMs?: number;
 }): ChatModelProvider {
   const models = options.models?.length ? options.models : DEFAULT_GEMINI_MODELS;
   const client =
@@ -258,6 +285,7 @@ export function createGeminiProvider(options: {
         models,
         options.retryDelayMs ?? RETRY_DELAY_MS,
         options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
+        options.walkBudgetMs ?? WALK_BUDGET_MS,
       ),
   };
 }

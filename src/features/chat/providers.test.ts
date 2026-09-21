@@ -126,7 +126,7 @@ describe("gemini provider", () => {
     const reply = await start(createGeminiProvider({ client })).send();
 
     expect(reply).toEqual({ type: "text", text: "hello" });
-    expect(calls[0].model).toBe("gemini-3.8-flash");
+    expect(calls[0].model).toBe("gemini-3.5-flash-lite");
     expect(calls[0].contents).toEqual([
       { role: "user", parts: [{ text: "can i have the wifi password?" }] },
     ]);
@@ -202,7 +202,7 @@ describe("gemini provider", () => {
     const provider = createGeminiProvider({ client, retryDelayMs: 0 });
 
     expect(await start(provider).send()).toEqual({ type: "text", text: "ok" });
-    expect(attempted).toEqual(["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"]);
+    expect(attempted).toEqual(["gemini-3.5-flash-lite", "gemini-3.7-flash", "gemini-3.6-flash"]);
   });
 
   it("gives up with a retryable error when every model is unavailable", async () => {
@@ -223,7 +223,7 @@ describe("gemini provider", () => {
     const attempted: string[] = [];
     const { client } = fakeGemini((model) => {
       attempted.push(model);
-      if (model === "gemini-3.8-flash") {
+      if (model === "gemini-3.5-flash-lite") {
         throw Object.assign(new TypeError("fetch failed"), {
           cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
         });
@@ -233,7 +233,7 @@ describe("gemini provider", () => {
     const provider = createGeminiProvider({ client, retryDelayMs: 0 });
 
     expect(await start(provider).send()).toEqual({ type: "text", text: "ok" });
-    expect(attempted).toEqual(["gemini-3.8-flash", "gemini-3.7-flash"]);
+    expect(attempted).toEqual(["gemini-3.5-flash-lite", "gemini-3.7-flash"]);
   });
 
   it("gives up with a retryable error when the connection keeps dropping", async () => {
@@ -256,7 +256,7 @@ describe("gemini provider", () => {
       models: {
         generateContent({ model }) {
           attempted.push(model);
-          if (model === "gemini-3.8-flash") return new Promise(() => {}); // never settles
+          if (model === "gemini-3.5-flash-lite") return new Promise(() => {}); // never settles
           return Promise.resolve(textResponse("ok"));
         },
       },
@@ -264,7 +264,7 @@ describe("gemini provider", () => {
     const provider = createGeminiProvider({ client, retryDelayMs: 0, requestTimeoutMs: 20 });
 
     expect(await start(provider).send()).toEqual({ type: "text", text: "ok" });
-    expect(attempted).toEqual(["gemini-3.8-flash", "gemini-3.7-flash"]);
+    expect(attempted).toEqual(["gemini-3.5-flash-lite", "gemini-3.7-flash"]);
   });
 
   it("surfaces a retryable error when every model stalls", async () => {
@@ -278,6 +278,32 @@ describe("gemini provider", () => {
       name: "ChatProviderError",
       retryable: true,
     });
+  });
+
+  it("stops walking once the whole turn has run out of time", async () => {
+    // The per-attempt timeout is generous on purpose, so the deadline is what
+    // stops a person waiting through ten slow attempts.
+    const attempted: string[] = [];
+    const client: GeminiChatClient = {
+      models: {
+        generateContent({ model }) {
+          attempted.push(model);
+          return new Promise(() => {}); // never settles
+        },
+      },
+    };
+    const session = start(
+      createGeminiProvider({
+        client,
+        retryDelayMs: 0,
+        requestTimeoutMs: 30, // would allow 10 attempts across two passes
+        walkBudgetMs: 80, // but the turn's budget runs out first
+      }),
+    );
+
+    await expect(session.send()).rejects.toMatchObject({ retryable: true });
+    expect(attempted.length).toBeGreaterThan(0);
+    expect(attempted.length).toBeLessThan(10);
   });
 
   it("fails fast on an error that retrying cannot fix", async () => {

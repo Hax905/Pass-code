@@ -62,8 +62,12 @@ describe("prompt and tools", () => {
 
   it("pins the model each provider uses", () => {
     expect(ANTHROPIC_CHAT_MODEL).toBe("claude-opus-5");
-    expect(DEFAULT_GEMINI_MODELS[0]).toBe("gemini-3.8-flash");
+    // A lite model leads on purpose: the replies are short, and it answers in
+    // a fraction of the time the larger flash models take. The rest of the
+    // list is fallback capacity, so there has to be more than one.
+    expect(DEFAULT_GEMINI_MODELS[0]).toBe("gemini-3.5-flash-lite");
     expect(DEFAULT_GEMINI_MODELS.length).toBeGreaterThan(1);
+    expect(new Set(DEFAULT_GEMINI_MODELS).size).toBe(DEFAULT_GEMINI_MODELS.length);
   });
 
   it("is identical for every user and includes the configured network and contact", () => {
