@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { ThemeToggle } from "@/components/theme-toggle";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export function AuthCard({
@@ -12,7 +13,10 @@ export function AuthCard({
   children: React.ReactNode;
 }) {
   return (
-    <main className="flex flex-1 items-center justify-center p-4">
+    <main className="relative flex flex-1 items-center justify-center p-4">
+      <div className="absolute top-4 right-4">
+        <ThemeToggle />
+      </div>
       <div className="w-full max-w-sm space-y-4">
         <Link href="/" className="block text-center text-lg font-semibold tracking-tight">
           PassCode

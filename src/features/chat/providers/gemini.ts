@@ -35,6 +35,27 @@ export const DEFAULT_GEMINI_MODELS = [
 
 const RETRY_PASSES = 2;
 const RETRY_DELAY_MS = 1500;
+// A stalled request has to fail over to the next model rather than hang the
+// whole chat turn: Google can accept the connection and then go quiet, which
+// no HTTP status or socket error ever surfaces.
+const REQUEST_TIMEOUT_MS = 15_000;
+
+/** One model took too long. Retryable: the next model may well answer. */
+class GeminiTimeoutError extends Error {
+  constructor(model: string, ms: number) {
+    super(`Gemini model ${model} did not respond within ${ms} ms`);
+    this.name = "GeminiTimeoutError";
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, model: string): Promise<T> {
+  if (ms <= 0) return promise;
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new GeminiTimeoutError(model, ms)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 // Gemini reports a blocked answer as a finish reason rather than a distinct
 // stop reason; these all mean "declined", not "failed".
@@ -95,8 +116,9 @@ function isTransportError(error: unknown): boolean {
   return false;
 }
 
-/** Capacity and connection problems are worth another model or another pass. */
+/** Capacity, stalls and connection problems are worth another model or pass. */
 function isRetryable(error: unknown): boolean {
+  if (error instanceof GeminiTimeoutError) return true;
   const status = statusOf(error);
   if (status === 503 || status === 429 || status === 500) return true;
   return status === undefined && isTransportError(error);
@@ -112,6 +134,7 @@ class GeminiSession implements ChatModelSession {
     private readonly tools: ToolSpec[],
     private readonly models: readonly string[],
     private readonly delayMs: number,
+    private readonly timeoutMs: number,
   ) {
     this.contents = history.map((turn) => ({
       role: turn.role === "assistant" ? "model" : "user",
@@ -140,11 +163,15 @@ class GeminiSession implements ChatModelSession {
     for (let pass = 0; pass < RETRY_PASSES; pass++) {
       for (const model of this.models) {
         try {
-          return await this.client.models.generateContent({
+          return await withTimeout(
+            this.client.models.generateContent({
+              model,
+              contents: this.contents,
+              config: this.config,
+            }),
+            this.timeoutMs,
             model,
-            contents: this.contents,
-            config: this.config,
-          });
+          );
         } catch (error) {
           last = error;
           if (!isRetryable(error)) {
@@ -213,6 +240,8 @@ export function createGeminiProvider(options: {
   models?: readonly string[];
   client?: GeminiChatClient;
   retryDelayMs?: number;
+  /** Per-attempt budget; 0 disables the timeout. */
+  requestTimeoutMs?: number;
 }): ChatModelProvider {
   const models = options.models?.length ? options.models : DEFAULT_GEMINI_MODELS;
   const client =
@@ -228,6 +257,7 @@ export function createGeminiProvider(options: {
         tools,
         models,
         options.retryDelayMs ?? RETRY_DELAY_MS,
+        options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
       ),
   };
 }

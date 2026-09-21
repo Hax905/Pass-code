@@ -248,6 +248,38 @@ describe("gemini provider", () => {
     });
   });
 
+  it("gives up on a stalled model and fails over to the next one", async () => {
+    // Google can accept the connection and then go quiet; no status, no socket
+    // error, so only a timeout gets the turn moving again.
+    const attempted: string[] = [];
+    const client: GeminiChatClient = {
+      models: {
+        generateContent({ model }) {
+          attempted.push(model);
+          if (model === "gemini-3.8-flash") return new Promise(() => {}); // never settles
+          return Promise.resolve(textResponse("ok"));
+        },
+      },
+    };
+    const provider = createGeminiProvider({ client, retryDelayMs: 0, requestTimeoutMs: 20 });
+
+    expect(await start(provider).send()).toEqual({ type: "text", text: "ok" });
+    expect(attempted).toEqual(["gemini-3.8-flash", "gemini-3.7-flash"]);
+  });
+
+  it("surfaces a retryable error when every model stalls", async () => {
+    const client: GeminiChatClient = {
+      models: {
+        generateContent: () => new Promise(() => {}),
+      },
+    };
+    const session = start(createGeminiProvider({ client, retryDelayMs: 0, requestTimeoutMs: 10 }));
+    await expect(session.send()).rejects.toMatchObject({
+      name: "ChatProviderError",
+      retryable: true,
+    });
+  });
+
   it("fails fast on an error that retrying cannot fix", async () => {
     const { client } = fakeGemini(() => {
       throw Object.assign(new Error("bad key"), { status: 401 });

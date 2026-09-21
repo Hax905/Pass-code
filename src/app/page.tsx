@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { getSessionUser } from "@/features/auth/dal";
 
@@ -13,7 +14,10 @@ export default async function Home({ searchParams }: PageProps<"/">) {
   if (user && denied !== "admin") redirect("/chat");
 
   return (
-    <main className="flex flex-1 items-center justify-center p-8">
+    <main className="relative flex flex-1 items-center justify-center p-8">
+      <div className="absolute top-4 right-4">
+        <ThemeToggle />
+      </div>
       <div className="max-w-md space-y-4 text-center">
         <h1 className="text-3xl font-semibold tracking-tight">PassCode</h1>
         <p className="text-muted-foreground">

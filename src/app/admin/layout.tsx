@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
 
+import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { getSessionUser } from "@/features/auth/dal";
 
@@ -26,19 +27,22 @@ export default async function AdminLayout({ children }: LayoutProps<"/admin">) {
             PassCode <span className="font-normal text-muted-foreground">Admin</span>
           </Link>
           <AdminNav />
-          {user && (
-            <div className="ml-auto flex items-center gap-3 text-sm">
-              <Suspense fallback={null}>
-                <AdminAlerts />
-              </Suspense>
-              <span className="text-muted-foreground">{user.email}</span>
-              <form action={logoutAction}>
-                <Button type="submit" variant="outline" size="sm">
-                  Sign out
-                </Button>
-              </form>
-            </div>
-          )}
+          <div className="ml-auto flex items-center gap-3 text-sm">
+            <ThemeToggle />
+            {user && (
+              <>
+                <Suspense fallback={null}>
+                  <AdminAlerts />
+                </Suspense>
+                <span className="text-muted-foreground">{user.email}</span>
+                <form action={logoutAction}>
+                  <Button type="submit" variant="outline" size="sm">
+                    Sign out
+                  </Button>
+                </form>
+              </>
+            )}
+          </div>
         </div>
       </header>
       {user?.role === "ADMIN" && <AutoRefresh />}

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { getSessionUser } from "@/features/auth/dal";
 
@@ -22,6 +23,7 @@ export default async function ChatPage() {
             PassCode <span className="font-normal text-muted-foreground">Assistant</span>
           </Link>
           <div className="ml-auto flex items-center gap-2 text-sm">
+            <ThemeToggle />
             {user ? (
               <>
                 {user.role === "ADMIN" && (
