@@ -1,0 +1,705 @@
+===============================================================================
+ PASSCODE - HOW THE PROJECT WORKS
+ A technical walkthrough of the system, section by section.
+
+ Written 2026-09-20, against commit 1173c44 (branch feat/phase-6-demo-readiness).
+ Companion documents: PRD.md (what it must do), STYLES.md (how it is built),
+ TASKLIST.md (what was built, when, and which decisions were reversed).
+===============================================================================
+
+
+-------------------------------------------------------------------------------
+ SECTION 1 - WHAT PASSCODE IS
+-------------------------------------------------------------------------------
+
+PassCode manages the shared Wi-Fi password of a building.
+
+The problem it solves is social, not technical. In a building with one shared
+Wi-Fi password, the password spreads by word of mouth: residents pass it to
+guests, guests pass it to other people, and eventually nobody knows who is on
+the network. Changing the password fixes that only briefly, and it creates a
+new problem: somebody has to hand the new password to every legitimate person.
+
+PassCode automates both halves:
+
+  1. It rotates the network password on a schedule, applying each new password
+     to the router and keeping an encrypted copy.
+
+  2. It hands the current password out itself, through a chat assistant, but
+     only to people who hold an approved account - and it logs every single
+     disclosure.
+
+The result is that the building always knows who has the password, because
+getting it requires an account, and every hand-over is written down.
+
+PassCode is a demo project. It is not deployed publicly, and it ships with a
+virtual (simulated) router rather than support for physical hardware.
+
+
+-------------------------------------------------------------------------------
+ SECTION 2 - HOW THE PIECES FIT TOGETHER
+-------------------------------------------------------------------------------
+
+There are four moving parts, and they are deliberately independent:
+
+    ROTATION ENGINE        AUTH LAYER          ADMIN APP        ASSISTANT
+    generates and     ->   decides who    ->   lets admins      answers users
+    applies passwords      each request        configure and    and hands out
+    on a schedule          belongs to          audit            the password
+
+A request from a person who wants the password travels like this:
+
+    Browser  ->  POST /api/chat
+                   |
+                   1. Same-origin check           (reject cross-site posts)
+                   2. resolveChatAccess()         (WHO - database check)
+                   3. userMessageLimiter.hit()    (HOW OFTEN - abuse control)
+                   4. chatHistorySchema.parse()   (WHAT - validate input)
+                   5. runChatTurn()               (the model conversation)
+                        |
+                        model asks for a tool
+                        |
+                   6. requestNetworkPassword()    (MAY THEY? - the real gate)
+                        |
+                        password returned to the APP, not to the model
+                   |
+             { reply, reveal? }  ->  Browser shows it in its own panel
+
+The important structural idea: steps 1, 2, 3, 4 and 6 are ordinary
+deterministic code. The language model sits only in step 5, and it is never
+consulted about authorization. It cannot grant access, and - as Section 11
+explains - it never sees the password at all.
+
+
+-------------------------------------------------------------------------------
+ SECTION 3 - TECHNOLOGY STACK
+-------------------------------------------------------------------------------
+
+  Framework      Next.js 16 (App Router, TypeScript, src/ directory)
+  UI             Tailwind CSS 4 + shadcn/ui components
+  Database       MongoDB (Atlas) via Mongoose
+  Validation     Zod, at every external boundary
+  Sessions       Auth.js (NextAuth) with JWT sessions
+  Assistant      Google Gemini by default, or Anthropic Claude - selectable
+  Scheduling     node-cron
+  Testing        Vitest (unit + integration), Playwright (end-to-end)
+
+Two stack decisions were reversals of the original plan and are worth knowing:
+
+  * The project was specified with PostgreSQL + Prisma. It runs on MongoDB +
+    Mongoose because local Postgres credentials were unavailable and Prisma 7
+    has no supported MongoDB runtime. Consequence: there are no migrations.
+    Schemas use strict:"throw", and `npm run db:sync` creates collections and
+    indexes. The database must be a replica set, because the code uses
+    multi-document transactions.
+
+  * The assistant was specified as the Anthropic API. It defaults to Gemini
+    because the Anthropic API needs paid credits and Gemini has a free tier.
+    Both are supported; see Section 10.
+
+
+-------------------------------------------------------------------------------
+ SECTION 4 - REPOSITORY LAYOUT
+-------------------------------------------------------------------------------
+
+  src/app/                  Next.js routes (pages, API routes, server actions)
+    (auth)/                 login and register pages
+    admin/                  the admin app and its server actions
+    chat/                   the assistant's user-facing page
+    api/                    HTTP endpoints (chat, register, me, admin/users/*)
+
+  src/features/             the actual logic, grouped by domain
+    auth/                   sessions, guards, user lifecycle, passwords
+    rotation/               generator, router adapter, scheduler, settings
+    chat/                   access gate, chat turn, tools, provider seam
+    admin/                  read models, anomaly detection, formatting
+
+  src/lib/                  shared infrastructure
+    db/                     Mongoose connection and models
+    crypto/                 AES-256-GCM encryption for secrets at rest
+    env.ts                  Zod-validated environment variables
+
+  scripts/                  command-line tools (see Section 13)
+  e2e/                      Playwright tests covering PRD section 7 flows A-E
+
+The rule the codebase follows: routes are thin. A route parses input, calls one
+function in src/features/, and formats the answer. Logic lives in features so
+it can be tested without HTTP.
+
+
+-------------------------------------------------------------------------------
+ SECTION 5 - CONFIGURATION
+-------------------------------------------------------------------------------
+
+All configuration is environment variables, validated by Zod schemas in
+src/lib/env.ts. They are validated in groups, so code that only needs the
+database is not forced to supply an encryption key.
+
+Required:
+
+  DATABASE_URL              mongodb:// or mongodb+srv:// URI (replica set)
+  DATABASE_NAME             overrides the database name (default "passcode")
+  PASSCODE_ENCRYPTION_KEY   32 bytes, base64. Encrypts stored passwords.
+                            Losing it makes stored passwords unrecoverable -
+                            a fresh rotation fixes that.
+  AUTH_SECRET               signs and encrypts session tokens
+  AUTH_URL                  the app's public origin
+
+Rotation:
+
+  ROUTER_ADAPTER              only "mock" is supported (the virtual router)
+  ROTATION_SCHEDULER_ENABLED  "true" runs the scheduler inside the web server
+  VIRTUAL_ROUTER_FAILURE      off | always | first-attempt - a demo/test switch
+                              that makes the virtual router fail on demand
+
+Assistant:
+
+  CHAT_PROVIDER             "gemini" (default) or "anthropic"
+  GEMINI_API_KEY            required when CHAT_PROVIDER=gemini
+  ANTHROPIC_API_KEY         required when CHAT_PROVIDER=anthropic
+  GEMINI_MODELS             optional; comma-separated models tried in order
+  PASSCODE_NETWORK_NAME     optional; personalises the assistant's answers
+  PASSCODE_SUPPORT_CONTACT  optional; who the assistant tells people to contact
+
+A note on DATABASE_URL: the local .env uses the long non-SRV form
+(mongodb://host1,host2,host3/?replicaSet=...) rather than mongodb+srv://,
+because Node on this machine cannot resolve SRV records. That is a workaround
+for the environment, not a project requirement.
+
+
+-------------------------------------------------------------------------------
+ SECTION 6 - THE DATA MODEL
+-------------------------------------------------------------------------------
+
+Five collections. Every schema uses strict:"throw", so writing a field that is
+not in the schema raises an error instead of silently storing it.
+
+users
+  email (unique, lowercased), name, role (ADMIN|USER),
+  status (PENDING|ACTIVE|REVOKED), passwordHash, tokenVersion,
+  revokedAt, passwordRequestSeq
+
+  - passwordHash is select:false, so it never comes back from an ordinary
+    query; code must ask for it explicitly.
+  - tokenVersion is the revocation mechanism. See Section 8.
+  - passwordRequestSeq exists purely to make concurrent password requests
+    collide. See Section 10.
+
+rotation_events
+  trigger (SCHEDULED|MANUAL), triggeredBy, status (PENDING|SUCCEEDED|FAILED),
+  attempts, adapter, errorMessage, manualApplicationRequired,
+  passwordCiphertext (select:false), createdAt, completedAt
+
+  - This collection IS the password history. The newest SUCCEEDED event holds
+    the current password, encrypted.
+  - A unique partial index named "one_pending_rotation" allows at most one
+    PENDING row at a time. That single index is what stops two servers from
+    rotating simultaneously.
+
+password_requests
+  user (absent for anonymous attempts), granted, denialReason
+  (UNAUTHENTICATED|NOT_AUTHORIZED|REVOKED|RATE_LIMITED), sourceIp, createdAt
+
+  - Every disclosure and every refusal is a row here. It is both the audit
+    trail and the data the hourly rate limit is computed from.
+
+rotation_settings
+  A single document with _id "global": enabled, intervalValue, intervalUnit
+  (HOURS|DAYS|WEEKS), windowStartMinute, windowEndMinute, timezone, updatedBy.
+  Uses optimisticConcurrency so two admins editing at once cannot silently
+  overwrite each other.
+
+audit_log
+  actor, action, target, metadata, createdAt - append-only (Section 11).
+
+
+-------------------------------------------------------------------------------
+ SECTION 7 - THE ROTATION ENGINE
+-------------------------------------------------------------------------------
+
+WHAT A ROTATION DOES (src/features/rotation/rotation-service.ts)
+
+  1. Generate a password. The generator uses a CSPRNG, produces 12-63
+     characters (default 20), guarantees every enabled character class is
+     present, and excludes look-alike characters (0/O, 1/l) and awkward
+     symbols, because people type these by hand on phones.
+
+  2. Encrypt it and store it as a PENDING rotation_events row. Storing before
+     applying is deliberate: if the process dies after the router accepted the
+     password, the password is not lost.
+
+  3. Apply it through the RouterAdapter, with one automatic retry and a 30s
+     timeout per attempt.
+
+  4. Mark the row SUCCEEDED or FAILED and write an audit_log entry - both in
+     one transaction, so history and audit trail cannot disagree.
+
+Only SUCCEEDED events count as the current password. A failed rotation leaves
+the previous password in force, which is the safe outcome: people who already
+have the old password keep working.
+
+THE ROUTER ADAPTER (router-adapter.ts, mock-router-adapter.ts)
+
+A deliberately tiny interface - one method, applyPassword(password) - which is
+the only hardware capability PassCode is allowed to use. No firmware, port or
+traffic operations belong here.
+
+Only the virtual router ships. It "applies" a password by accepting it and
+recording a SHA-256 fingerprint (so tests can verify without keeping
+plaintext). VIRTUAL_ROUTER_FAILURE makes it fail on demand, which is how the
+failure paths are demonstrated and tested.
+
+An adapter must throw if the password was not applied, and its error messages
+must never contain the password - the rotation service additionally redacts
+the password from any error text before storing it.
+
+THE SCHEDULER (scheduler.ts, schedule.ts)
+
+A node-cron task ticks once a minute and asks a pure function,
+evaluateSchedule(), whether a rotation is due. It works that way rather than
+translating intervals into cron expressions because cron cannot express
+"every 3 weeks".
+
+The scheduling rules are all in schedule.ts with no database or timers, so
+they are unit-testable:
+
+  - disabled          -> never
+  - not yet due       -> interval has not elapsed since the last success
+  - retry-backoff     -> a failure occurred less than 30 minutes ago
+  - outside-window    -> a maintenance window is set and now is not in it
+                         (windows may wrap past midnight, e.g. 22:00-06:00)
+
+The scheduler does nothing at all until an admin saves settings for the first
+time, so a fresh deployment never rotates on defaults nobody chose.
+
+Two safeguards keep concurrent servers honest:
+
+  - the one_pending_rotation index rejects a second overlapping rotation; and
+  - supersededAfter aborts a rotation if another one succeeded after the moment
+    the decision was based on. This closes a real bug found in Phase 5: two
+    instances could otherwise rotate twice in a row when one finished between
+    the other's read and its own start.
+
+The scheduler can run inside the web server (ROTATION_SCHEDULER_ENABLED=true,
+started from src/instrumentation.ts) or as a separate process
+(`npm run rotation:worker`).
+
+
+-------------------------------------------------------------------------------
+ SECTION 8 - AUTHENTICATION AND AUTHORIZATION
+-------------------------------------------------------------------------------
+
+ACCOUNT LIFECYCLE
+
+  self-registration -> PENDING -> (admin approves) -> ACTIVE -> (revoke) -> REVOKED
+                                                        ^                      |
+                                                        +--- (reinstate) ------+
+
+Admins can also create accounts directly, which start ACTIVE.
+
+SESSIONS, AND WHY A JWT IS NOT ENOUGH
+
+Sessions are JWTs with a 12-hour lifetime. A JWT cannot be withdrawn once
+issued, which is a problem for a system whose whole purpose is removing
+access. PassCode solves it with a version number:
+
+  - every user row carries tokenVersion;
+  - the session token carries the tokenVersion it was issued with;
+  - every protected request re-reads the user from the database and rejects
+    the session unless status is ACTIVE and the two versions still match;
+  - revoking, changing a role, or resetting a password increments tokenVersion.
+
+So revocation takes effect on the revoked person's very next request, with no
+session store and no token blacklist. This is checked in authorizeSession()
+(src/features/auth/session-guard.ts), which every entry point funnels through.
+
+THREE ENTRY POINTS, THREE WRAPPERS
+
+Because Next.js layouts do not re-render on navigation, every page and every
+action must perform its own check. The codebase provides one wrapper per kind
+of entry point, all calling the same authorizeSession():
+
+  requirePageAccess()    pages          - redirects visitors to /login,
+                                          non-admins to /?denied=admin
+  requireActionAccess()  server actions - returns an error message instead of
+                                          redirecting (actions are public
+                                          endpoints and must not redirect)
+  withAuth()             API routes     - returns a JSON error with a status
+
+withAuth() additionally refuses cross-origin state-changing requests outright,
+on top of the session cookie already being SameSite=Lax.
+
+LOGIN HARDENING (src/features/auth/login.ts)
+
+  - Five failed attempts for one email within 15 minutes lock it out. The
+    lockout is checked BEFORE the password, so a locked account cannot be
+    probed. The accepted tradeoff: someone who knows an email address can
+    lock it for 15 minutes.
+  - An unknown email is still verified against a dummy hash, so a wrong email
+    and a wrong password take the same time. This prevents discovering valid
+    accounts by timing.
+  - PENDING and REVOKED statuses are only revealed to someone who already
+    supplied the correct password.
+  - Self-registration always answers with the same 202 message, even when the
+    email already exists, so the endpoint cannot be used to find accounts.
+
+PROTECTION OF PRIVILEGE
+
+  - Admins cannot revoke or demote themselves.
+  - The last remaining active admin cannot be revoked or demoted.
+  - Every user-lifecycle change writes its audit_log entry in the same
+    transaction as the change itself.
+
+
+-------------------------------------------------------------------------------
+ SECTION 9 - THE ADMIN APP
+-------------------------------------------------------------------------------
+
+Four pages under /admin, all admin-gated:
+
+  /admin            Dashboard - rotation status, alerts, pending accounts,
+                    and a button to reveal the current password
+  /admin/rotation   Schedule settings, "rotate now", rotation history
+  /admin/users      Approve, revoke, reinstate, change role, reset password,
+                    add a user
+  /admin/requests   The password request log (who asked, when, granted or not)
+
+Three behaviours worth knowing:
+
+  * Revealing the current password is a sensitive action. The audit_log entry
+    is written BEFORE the password is returned, so a disclosure cannot happen
+    without a record. It is logged even when there is no password to show.
+
+  * Admin pages refresh themselves once a minute, so background events
+    (a scheduled rotation, a new request) appear without a reload. Client
+    state such as a half-filled form is preserved.
+
+  * Settings are saved with an expected version number. If another admin saved
+    in the meantime, the save is refused with a conflict rather than silently
+    overwriting their change.
+
+
+-------------------------------------------------------------------------------
+ SECTION 10 - THE CHAT ASSISTANT
+-------------------------------------------------------------------------------
+
+The assistant lives at /chat. The page is open to everyone; the API decides
+what each visitor gets.
+
+THE ACCESS GATE (src/features/chat/access.ts)
+
+Before any prompt is built, resolveChatAccess() reads the user from the
+database. Someone who is not signed in, or whose account is revoked, never
+reaches the model at all: they get a fixed, hand-written explanation plus
+sign-in and request-access buttons, and the attempt is logged as a denied
+password request. Those logged denials are themselves capped (10 per address
+or user per 10 minutes) so the log cannot be flooded.
+
+THE TURN (chat-service.ts)
+
+runChatTurn() builds the system prompt, opens a provider session, and then
+loops: ask the model, run any tools it requested, hand back the results, at
+most 5 rounds. The person's display name is passed as quoted JSON data, not
+as prose, so a name cannot act as an instruction.
+
+THE THREE TOOLS (prompt.ts)
+
+  show_network_password      asks the app to show the password
+  get_rotation_info          when the password last changed / changes next
+  get_my_password_requests   the person's OWN history and remaining allowance
+
+None of them takes any arguments, which removes a whole class of injection.
+get_my_password_requests is scoped to the caller in code - the model cannot
+ask about anybody else.
+
+THE PASSWORD GATE (password-access.ts)
+
+This is the only path that hands out the password, and it is pure code:
+
+  1. Re-read the user inside a transaction and re-check status and
+     tokenVersion. This matters because a chat turn takes seconds, and a
+     revocation that lands mid-turn must win.
+  2. Count granted requests in the last hour; the limit is 3.
+  3. Fetch and decrypt the current password.
+  4. Log the outcome - granted, REVOKED, NOT_AUTHORIZED or RATE_LIMITED.
+
+The transaction also increments users.passwordRequestSeq. That field has no
+other purpose: writing it makes two simultaneous requests for the same user
+conflict, so MongoDB serialises them and the limit is exact rather than
+approximate. Verified under load: 20 simultaneous requests produce exactly 3
+grants and 17 rate-limited rows.
+
+THE PROVIDER SEAM (src/features/chat/providers/)
+
+runChatTurn() knows no vendor. It talks to a ChatModelProvider /
+ChatModelSession interface; the provider only translates messages and tool
+calls. The session owns the per-turn conversation state, because each vendor
+requires its own message format echoed back verbatim and a single shared
+representation would corrupt one of them.
+
+Two providers ship:
+
+  anthropic   @anthropic-ai/sdk, claude-opus-5, with server-side refusal
+              fallback and strict tools
+  gemini      @google/genai, stateless models.generateContent (no conversation
+              state is kept at the provider)
+
+Practical Gemini details that were discovered by building against it:
+
+  - a tool call arrives with finishReason STOP, so calls are detected via
+    functionCalls, not the finish reason;
+  - tool results go back as a "user"-role content containing functionResponse
+    parts, because the SDK only allows the roles user and model;
+  - blocked answers (SAFETY, PROHIBITED_CONTENT, ...) map to the same fixed
+    refusal reply that Anthropic's refusal stop reason produces;
+  - the free tier limits capacity per model - 503 under load, and 429 once a
+    model's daily quota is spent - so GEMINI_MODELS is a list walked in order,
+    twice, before giving up. Every entry must be a DISTINCT model that still
+    serves: an alias such as gemini-flash-latest shares the newest model's
+    quota, and a retired model answers 404, which is not retryable and ends
+    the walk early;
+  - a dropped connection carries no HTTP status (undici raises "fetch failed"),
+    so it is recognised through the error's cause chain and retried like a 503.
+
+WHAT THE USER SEES
+
+The password never appears in the assistant's text. It arrives in a separate
+`reveal` field and is rendered in its own panel with a copy button. The panel
+hides itself after 60 seconds, and the password is never included in the
+conversation history sent back to the server on the next turn.
+
+
+-------------------------------------------------------------------------------
+ SECTION 11 - SECURITY PROPERTIES, AND HOW EACH IS ENFORCED
+-------------------------------------------------------------------------------
+
+These are the guarantees the system is built to provide, each with the
+mechanism that actually enforces it.
+
+1. THE MODEL NEVER SEES THE PASSWORD.
+   show_network_password returns only "shown" or "not shown" to the model. The
+   password travels to the browser in a separate field. Prompt injection
+   therefore cannot make the model leak it, and no password is ever sent to
+   the provider. The live check asserts this over every outbound payload of a
+   real run.
+
+2. THE MODEL NEVER DECIDES WHO IS AUTHORIZED.
+   Authorization happens in resolveChatAccess() before a prompt exists, and
+   again in requestNetworkPassword() at the moment of the request. Both are
+   plain code reading the database.
+
+3. PASSWORDS ARE ENCRYPTED AT REST.
+   AES-256-GCM with a random IV per value, stored as v1:iv:tag:ciphertext.
+   The authentication tag makes tampering detectable - decryption fails rather
+   than returning junk. Verified directly: a single flipped bit in stored
+   ciphertext causes decryption to fail.
+
+4. REVOCATION IS IMMEDIATE.
+   The tokenVersion mechanism in Section 8. A revoked person loses pages, API
+   routes, server actions and the assistant on their very next request.
+
+5. THE AUDIT LOG CANNOT BE REWRITTEN.
+   Mongoose middleware refuses updateOne, updateMany, replaceOne,
+   findOneAndUpdate, findOneAndReplace, deleteOne, deleteMany,
+   findOneAndDelete, saves of existing documents, and non-insert bulkWrite.
+   Inserts are the only permitted write.
+
+   Important limitation, recorded deliberately: this is enforced in
+   APPLICATION CODE, not by the database. Doing it at the database level would
+   need a restricted MongoDB user with no update/delete rights on the
+   collection, which was out of scope for a local demo. Anything with direct
+   database access can still edit the collection.
+
+6. EVERY DISCLOSURE IS LOGGED.
+   Both paths - the assistant and the admin reveal button - write their log
+   entry as part of the same operation that produces the password.
+
+7. SECRETS NEVER LEAK THROUGH SIDE CHANNELS.
+   Password hashes are select:false. Router error messages are redacted of the
+   password before being stored. Passwords are never accepted as command-line
+   arguments (which would put them in shell history) - the create-admin script
+   reads them from a hidden prompt or an environment variable.
+
+8. ONLY SAME-SITE REQUESTS CAN CHANGE STATE.
+   Session cookies are SameSite=Lax, and state-changing API requests
+   additionally verify the Origin header.
+
+
+-------------------------------------------------------------------------------
+ SECTION 12 - RATE LIMITING AND ANOMALY DETECTION
+-------------------------------------------------------------------------------
+
+Three limits, at three different layers, for three different reasons:
+
+  Password disclosures   3 per user per hour      in the DATABASE - exact,
+                                                  holds across instances
+  Chat messages          20 per user per 10 min   IN MEMORY - cost and abuse
+                                                  control; each instance
+                                                  counts separately
+  Logged denials         10 per user or IP        IN MEMORY - stops the
+                         per 10 min               request log being flooded
+
+The database-backed limit is the one that protects the password, and it is the
+one that is exact. The in-memory limits are cost controls where approximation
+is acceptable.
+
+The dashboard raises alerts when:
+
+  - the last rotation failed;
+  - a user was granted the password more than 5 times in 24 hours (they may be
+    relaying it to others - the original problem PassCode exists to solve);
+  - a user keeps hitting the hourly limit;
+  - denied requests exceed 10 in an hour;
+  - failed logins exceed 20 in an hour (possible password guessing).
+
+Alerts appear as a badge on every admin page, and the pages refresh once a
+minute so they surface without a reload.
+
+
+-------------------------------------------------------------------------------
+ SECTION 13 - RUNNING THE PROJECT
+-------------------------------------------------------------------------------
+
+FIRST RUN
+
+  npm install
+  cp .env.example .env          and fill in the values from Section 5
+  npm run db:sync               create collections and indexes
+  npm run user:create-admin -- --email you@example.com
+  npm run dev
+
+The password for create-admin is read from a hidden prompt, or from
+PASSCODE_ADMIN_PASSWORD for non-interactive use. It is never accepted as a
+command-line argument.
+
+DEMO
+
+  DATABASE_NAME=passcode_demo npm run demo:seed
+  npm run build && npm start
+
+demo:seed loads six accounts (two admins, two users, one revoked, one awaiting
+approval), a 7-day schedule, a failed and a successful rotation, and password
+request history. All accounts use the password: passcode demo 2026
+
+It DELETES everything first, so it refuses any database whose name does not
+end in _demo or _test unless --force is passed.
+
+COMMAND-LINE TOOLS
+
+  npm run db:sync            create/update collections and indexes
+  npm run user:create-admin  create an ACTIVE admin account
+  npm run rotate             rotate once, now, from the command line
+  npm run rotation:worker    run the scheduler as a separate process
+  npm run demo:seed          load demo data
+  npm run chat:live-check    exercise the assistant against the REAL model
+
+The failure switch is useful for demos:
+
+  VIRTUAL_ROUTER_FAILURE=always        npm run rotate
+      -> FAILED after 2 attempts, previous password stays current
+
+  VIRTUAL_ROUTER_FAILURE=first-attempt npm run rotate
+      -> succeeds on attempt 2, showing the automatic retry
+
+
+-------------------------------------------------------------------------------
+ SECTION 14 - TESTING
+-------------------------------------------------------------------------------
+
+Four layers, each answering a question the others cannot.
+
+  UNIT (npm test) - 80 tests, ~3 seconds, no database.
+    Pure logic: the password generator, the scheduling rules, encryption,
+    history validation, the rate limiter, prompt and tool construction, and
+    each provider's exact wire format.
+
+  INTEGRATION (npm run test:integration) - 74 tests, ~4 minutes, real MongoDB.
+    Everything that involves transactions, indexes or concurrency: exact rate
+    limits under 20 simultaneous requests, audit-log immutability across 14
+    write paths, rotation races, settings conflicts, and offboarding through
+    the real route handlers. Runs only against a database whose name ends in
+    _test, and clears it between tests.
+
+  END-TO-END (npm run test:e2e) - 8 Playwright tests, ~40 seconds.
+    PRD section 7 flows A-E through a real browser against a production build:
+    configuring rotation, rotating and revealing, getting the password from
+    the assistant, being refused without access, and revoke-then-reinstate.
+
+  LIVE CHECK (npm run chat:live-check) - 14 checks, or 17 with --full.
+    The only check that calls the real model. It asserts what only a real turn
+    can show: that the model actually calls the tools, that the revealed
+    password matches the stored one, that grants and rate-limited refusals are
+    logged, that out-of-scope requests are declined - and that the password
+    appears in NO outbound request. It removes the log rows it writes.
+
+Two practical notes:
+
+  - The tests use a scripted fake model everywhere except the live check, so
+    the suite is fast, free and deterministic.
+  - Running the live check twice within an hour trips the 3-per-hour limit and
+    fails three of its checks. That is the limit working correctly, not a
+    regression; re-run demo:seed to reset the request log.
+
+
+-------------------------------------------------------------------------------
+ SECTION 15 - KNOWN LIMITS AND DELIBERATE TRADEOFFS
+-------------------------------------------------------------------------------
+
+Recorded honestly, because each was a decision rather than an oversight:
+
+  * No physical router support. The virtual router is the only adapter.
+
+  * Audit-log immutability is enforced in application code, not by the
+    database (see Section 11, point 5).
+
+  * In-memory rate limits count per server instance. With several instances,
+    the effective chat-message limit is higher. The password limit itself is
+    in the database and is unaffected.
+
+  * The login lockout is per email, so someone who knows an address can lock
+    it for 15 minutes.
+
+  * Anonymous visitors get a fixed explanation rather than general Q&A. The
+    PRD would have allowed general answers, but that was left out to limit
+    cost and abuse surface.
+
+  * Google's free tier may use submitted content for product improvement. The
+    password never reaches the model, but chat text and display names do. Use
+    CHAT_PROVIDER=anthropic, or a paid Gemini tier, where that matters.
+
+  * Two questions were deliberately left open for the project owner:
+    whether to add SSO alongside email/password, and whether admins should be
+    able to see the raw current password or only rotation status.
+
+  * The integration suite uses a 30-second per-test timeout. Against a shared
+    Atlas cluster under heavy concurrent load, a transaction-heavy test can
+    exceed it; run the suite without competing database work.
+
+
+-------------------------------------------------------------------------------
+ SECTION 16 - HOW THE PROJECT WAS BUILT
+-------------------------------------------------------------------------------
+
+PassCode was built in seven phases, each ending in a working, tested state.
+TASKLIST.md holds the full log, including every reversal and why it happened.
+
+  Phase 0   Foundations - scaffold, database, CI, environment validation
+  Phase 1   Rotation engine - generator, adapter, scheduler, failure handling
+  Phase 2   Auth layer - registration, approval, sessions, guards, revocation
+  Phase 3   Admin app - dashboard, settings, users, request log
+  Phase 4   Chatbot - access gate, tools, password gate, chat UI
+  Phase 5   Observability and hardening - alerting, append-only audit log,
+            load tests, race conditions, offboarding
+  Phase 6   Polish and demo readiness - end-to-end tests, demo seed, docs,
+            and the live check against the real model
+
+The working rule across all of them: a task counts as done only if the app
+still builds and every existing test still passes. Where the approach changed
+from the original plan - Postgres to MongoDB, Anthropic to Gemini, physical
+router to virtual router - the change is recorded as a Pivot in TASKLIST.md
+with its reason and its downstream effects, so the decision does not have to
+be rediscovered later.
+
+===============================================================================
+ END
+===============================================================================

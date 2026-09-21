@@ -1,0 +1,1617 @@
+===============================================================================
+ PASSCODE - FUNCTIONALITY IN DEPTH
+ Every layer of the system and how a request actually moves through it.
+
+ Written 2026-09-20, against commit 1173c44 (branch feat/phase-6-demo-readiness).
+
+ This document is for someone who wants to understand the machine, not just
+ use it. It assumes you have read HOW-PASSCODE-WORKS.txt, or are willing to
+ pick up the overview along the way.
+
+ CONTENTS
+   PART I    Orientation .................................. sections 1-3
+   PART II   The database ................................. sections 4-9
+   PART III  The code ..................................... sections 10-17
+   PART IV   The client .................................. sections 18-22
+   PART V    Complete workflows, end to end ............... sections 23-31
+   PART VI   Operations, testing, failure modes ........... sections 32-36
+===============================================================================
+
+
+
+###############################################################################
+ PART I - ORIENTATION
+###############################################################################
+
+
+-------------------------------------------------------------------------------
+ SECTION 1 - THE ONE IDEA THAT EXPLAINS THE WHOLE DESIGN
+-------------------------------------------------------------------------------
+
+Almost every structural decision in PassCode follows from a single sentence:
+
+    The thing being protected is a single shared secret that must be given
+    to people, not hidden from them.
+
+That is unusual. Most systems protect a secret by never revealing it: a
+password hash is compared, never returned. PassCode cannot do that. The Wi-Fi
+password's entire purpose is to be typed into a phone by a resident, so the
+system must be able to decrypt it and show it.
+
+Everything follows:
+
+  - It is ENCRYPTED, not hashed, because it must be recoverable
+    (Section 8).
+  - Because it is recoverable, every recovery must be LOGGED
+    (Sections 6 and 27).
+  - Because it is given out by a language model's conversation, the model
+    must never actually HOLD it (Section 16).
+  - Because the population of people allowed to receive it changes, access
+    must be revocable INSTANTLY, not at the next token expiry
+    (Section 12).
+  - Because a person who receives it may pass it on anyway, the system
+    watches for people who ask unusually often (Section 17).
+
+If you keep that sentence in mind, the rest of the design reads as a series of
+consequences rather than arbitrary choices.
+
+
+-------------------------------------------------------------------------------
+ SECTION 2 - THE FOUR EXECUTION CONTEXTS
+-------------------------------------------------------------------------------
+
+PassCode is a Next.js App Router application. Code runs in four distinct
+places, and confusing them is the most common way to misread the codebase.
+
+1. SERVER COMPONENTS (the default)
+   Files under src/app/ with no "use client" line. They run only on the
+   server, can await the database directly, and their output is streamed to
+   the browser as HTML. They cannot hold state or handle events.
+
+   Example: src/app/admin/page.tsx awaits getRotationStatus(),
+   getRotationSettings() and getAnomalies() in parallel and renders the
+   dashboard.
+
+2. CLIENT COMPONENTS ("use client")
+   Shipped to the browser, hold state, handle clicks and timers. They cannot
+   touch the database; they reach the server through a server action or fetch.
+
+   Example: src/app/chat/chat-client.tsx holds the conversation, the input
+   box, and the 60-second countdown on the password panel.
+
+3. SERVER ACTIONS ("use server")
+   Functions a client component can call as if they were local, which actually
+   execute on the server. CRITICAL: they are public HTTP endpoints. Anyone can
+   invoke one directly. This is why every action in src/app/admin/actions.ts
+   re-checks admin access itself rather than trusting that the page rendered.
+
+4. ROUTE HANDLERS (src/app/api/**/route.ts)
+   Ordinary HTTP endpoints. Used where a real API is wanted: the chat turn,
+   registration, /api/me, and the admin user-management endpoints.
+
+A fifth context worth knowing: src/instrumentation.ts runs ONCE per server
+start, before any request. That is where the rotation scheduler is launched
+when ROTATION_SCHEDULER_ENABLED=true.
+
+
+-------------------------------------------------------------------------------
+ SECTION 3 - THE ARCHITECTURAL RULE THE CODEBASE FOLLOWS
+-------------------------------------------------------------------------------
+
+    Routes and pages are thin. Logic lives in src/features/.
+
+A route handler parses input, calls ONE feature function, and formats the
+result. A page awaits feature functions and renders. No business rule lives in
+src/app/.
+
+The reason is testability: integration tests call registerUser(),
+requestNetworkPassword() and rotateNetworkPassword() directly, with no HTTP
+server running. The 74 integration tests would be far slower and far more
+brittle if the rules lived in route handlers.
+
+The dependency direction is strictly one-way:
+
+    src/app/  ->  src/features/  ->  src/lib/
+
+src/lib/ (database, crypto, env) never imports from src/features/, and
+src/features/ never imports from src/app/ — with one deliberate exception:
+client components under src/features/admin/components/ import server actions
+from src/app/admin/actions.ts, because that is where actions must live.
+
+There is one more subtle seam. src/features/chat/history.ts exists as its own
+tiny module solely so that the model providers can import the ChatHistory type
+without importing chat-service.ts, which would create a cycle
+(chat-service -> providers -> chat-service).
+
+
+
+###############################################################################
+ PART II - THE DATABASE
+###############################################################################
+
+
+-------------------------------------------------------------------------------
+ SECTION 4 - CONNECTION MANAGEMENT
+-------------------------------------------------------------------------------
+
+src/lib/db/connection.ts
+
+connectDb() is called at the top of essentially every feature function. It is
+safe to call repeatedly: the connection promise is cached on globalThis, which
+means it survives Next.js dev hot reloads (a module-level variable would not —
+the module is re-evaluated, globalThis is not).
+
+Three settings are deliberate:
+
+  mongoose.set("strictQuery", true)
+      Mongoose refuses to build a query from a field that is not in the
+      schema. A typo in a filter becomes an error instead of a query that
+      silently matches everything — which, in a filter guarding password
+      access, would be a serious bug.
+
+  autoIndex: false
+      Indexes are NOT created on boot. They are managed explicitly by
+      `npm run db:sync`. Auto-indexing on boot is a production hazard: a
+      restart can trigger an index build against a large collection.
+
+  serverSelectionTimeoutMS: 10_000
+      A dead database fails in ten seconds rather than hanging.
+
+If the initial connection fails, the cached promise is cleared, so the next
+call retries instead of permanently returning the rejected promise.
+
+DATABASE SELECTION. The database name comes from DATABASE_NAME, falling back
+to "passcode". This single variable is what lets the same code run against
+passcode (real), passcode_test (integration), passcode_e2e_test (Playwright)
+and passcode_demo (demo) without any other change. Several scripts refuse to
+run unless the name ends in _test or _demo, because they delete data
+(Section 33).
+
+REPLICA SET REQUIREMENT. The code uses multi-document transactions, which
+MongoDB only supports on a replica set. A standalone mongod will fail. The
+bundled docker-compose.yml starts a single-node replica set for this reason.
+
+
+-------------------------------------------------------------------------------
+ SECTION 5 - COLLECTION REFERENCE
+-------------------------------------------------------------------------------
+
+src/lib/db/models.ts. Every schema sets strict: "throw", so writing an
+unknown field raises rather than silently storing it.
+
+--- users -------------------------------------------------------------------
+
+  email               String, required, trim, lowercase, UNIQUE
+  name                String, trim, optional
+  role                "ADMIN" | "USER", default "USER"
+  status              "PENDING" | "ACTIVE" | "REVOKED", default "PENDING"
+  passwordHash        String, select: false
+  tokenVersion        Number, required, default 0, min 0
+  revokedAt           Date, optional
+  passwordRequestSeq  Number, min 0, optional
+  createdAt/updatedAt timestamps
+
+  Four fields deserve explanation.
+
+  lowercase: true on email is not cosmetic. authenticateCredentials()
+  lowercases the submitted address before looking it up. If the stored value
+  kept its original case, "Maria@Example.com" would register successfully and
+  then never be able to sign in. Mongoose normalises on write, which closes
+  that gap.
+
+  select: false on passwordHash means the hash is absent from ordinary query
+  results. Code that needs it must ask: .select("+passwordHash"). Only
+  login.ts does. This makes accidentally serialising a hash into an API
+  response essentially impossible.
+
+  tokenVersion is the revocation mechanism, explained fully in Section 12.
+
+  passwordRequestSeq has NO business meaning at all. It exists to be written.
+  See Section 7.
+
+--- rotation_events ---------------------------------------------------------
+
+  trigger                    "SCHEDULED" | "MANUAL", required
+  triggeredBy                ObjectId -> User, optional
+  status                     "PENDING" | "SUCCEEDED" | "FAILED"
+  attempts                   Number, default 0
+  adapter                    String (which RouterAdapter ran, e.g. "mock")
+  errorMessage               String, optional
+  manualApplicationRequired  Boolean, optional
+  passwordCiphertext         String, select: false
+  createdAt, completedAt
+
+  This collection IS the password history and the current-password store.
+  There is no separate "current password" record; the newest SUCCEEDED row is
+  the current password, by definition. That removes a whole class of bug where
+  a pointer and the history disagree.
+
+  Note timestamps: { createdAt: true, updatedAt: false }. A rotation event is
+  a record of something that happened; it has no meaningful "last modified".
+
+--- password_requests -------------------------------------------------------
+
+  user          ObjectId -> User, OPTIONAL
+  granted       Boolean, required
+  denialReason  "UNAUTHENTICATED" | "NOT_AUTHORIZED" | "REVOKED" | "RATE_LIMITED"
+  sourceIp      String, optional
+  createdAt
+
+  `user` is optional because attempts by people who are not signed in are
+  still recorded (PRD Flow D) — there is no user to point at.
+
+  This collection does double duty, which is worth understanding clearly:
+  it is both the AUDIT TRAIL of disclosures and the DATA SOURCE for the
+  hourly rate limit. requestNetworkPassword() computes the limit by counting
+  rows here. There is no separate counter to drift out of sync.
+
+--- rotation_settings -------------------------------------------------------
+
+  _id                "global" (a String, not an ObjectId — this is a singleton)
+  enabled            Boolean, default true
+  intervalValue      Number, default 7, min 1
+  intervalUnit       "HOURS" | "DAYS" | "WEEKS", default "DAYS"
+  windowStartMinute  Number 0-1439, optional
+  windowEndMinute    Number 0-1439, optional
+  timezone           String, default "UTC"
+  updatedBy          ObjectId -> User
+
+  optimisticConcurrency: true makes Mongoose check the document version on
+  save and throw VersionError if another writer got there first. This is what
+  turns "two admins editing at once" from silent data loss into a visible
+  conflict (Section 15).
+
+  The window is stored as minutes after midnight rather than a time string,
+  which makes the comparison in isWithinWindow() a pair of integer
+  comparisons with no parsing.
+
+--- audit_log ---------------------------------------------------------------
+
+  actor     ObjectId -> User, optional (absent when the system acted)
+  action    String, required   e.g. "auth.login.failed", "user.revoked",
+                               "rotation.succeeded", "password.viewed"
+  target    String, optional   an id, a path, or an email
+  metadata  Mixed
+  createdAt
+
+  Append-only. See Section 9.
+
+  `target` is a String rather than an ObjectId because it holds different
+  kinds of thing depending on the action: a user id, the settings id "global",
+  a request path, or an email address (for login throttling).
+
+
+-------------------------------------------------------------------------------
+ SECTION 6 - EVERY INDEX, AND WHAT IT IS FOR
+-------------------------------------------------------------------------------
+
+Nine indexes. None is speculative; each backs a specific query or constraint.
+
+  users
+    { email: 1 } UNIQUE
+        Enforces one account per address, and backs the login lookup.
+        The unique violation (error code 11000) is what createUser() catches
+        and converts into UserActionError("email_taken").
+
+  rotation_events
+    { createdAt: -1 }
+        "newest rotation" — the dashboard and the scheduler.
+    { status: 1, createdAt: -1 }
+        "newest SUCCEEDED" — this is the current-password lookup, the hottest
+        query in the system.
+    { status: 1 } UNIQUE, partialFilterExpression { status: "PENDING" },
+                  named "one_pending_rotation"
+        THE MOST IMPORTANT INDEX IN THE PROJECT. A unique index restricted to
+        PENDING rows means the database physically cannot hold two rotations
+        in progress. Two servers that both decide to rotate will both try to
+        insert a PENDING row; one insert fails with code 11000, which
+        rotateNetworkPassword() converts into RotationInProgressError. The
+        mutual exclusion is enforced by MongoDB, not by application locking.
+
+  password_requests
+    { user: 1, createdAt: -1 }
+        The sliding-window rate limit ("this user's granted requests since
+        T") and the per-user anomaly aggregation.
+    { createdAt: -1 }
+        The admin request log, and the "denied in the last hour" count.
+
+  audit_log
+    { actor: 1, createdAt: -1 }      "what did this person do"
+    { action: 1, createdAt: -1 }     "all failed logins in the last hour"
+    { action: 1, target: 1, createdAt: -1 }
+        Specifically for login throttling: count action="auth.login.failed"
+        with target=<email> since T. Without this compound index, every login
+        attempt would scan.
+
+`npm run db:sync` calls createCollection() then syncIndexes() on each model.
+syncIndexes() also DROPS indexes that are no longer in the schema and reports
+them, so the script is the MongoDB equivalent of applying migrations.
+
+
+-------------------------------------------------------------------------------
+ SECTION 7 - TRANSACTIONS: WHERE, AND WHY EACH ONE EXISTS
+-------------------------------------------------------------------------------
+
+There are four transactional paths. Each exists for a different reason.
+
+1. USER LIFECYCLE CHANGES (users.ts, inTransaction())
+   The change and its audit_log entry are written together. Without this you
+   could revoke someone and lose the record of having done so, which would
+   make the audit trail untrustworthy exactly when it matters most.
+
+2. ROTATION COMPLETION (rotation-service.ts)
+   The rotation_events status update and its audit entry commit together, so
+   history and audit can never disagree about whether a rotation succeeded.
+
+3. SETTINGS SAVE (settings.ts)
+   Version check, save and audit entry in one unit, so a conflicting edit
+   cannot slip between the check and the write.
+
+4. PASSWORD DISCLOSURE (password-access.ts) — the interesting one
+   This transaction does something unusual, and it is worth understanding in
+   full because it is the only place in the codebase where a field is written
+   purely for its locking side effect.
+
+   THE PROBLEM. The rule is "three disclosures per user per hour". The
+   natural implementation is: count recent grants, and if fewer than three,
+   insert a grant. Two simultaneous requests both read "2", both decide they
+   are allowed, and both insert. The user gets four. MongoDB's default
+   isolation does not prevent this, because the two transactions touch
+   DIFFERENT documents and therefore never conflict.
+
+   THE FIX. Give them a document to fight over. The transaction begins with:
+
+       User.findOneAndUpdate(
+         { _id: userId },
+         { $inc: { passwordRequestSeq: 1 } },
+         { session, ... }
+       )
+
+   Both transactions now write the SAME user document. MongoDB detects the
+   write conflict, aborts one, and its driver retries it — by which time the
+   first has committed and the retry counts three grants and refuses.
+
+   passwordRequestSeq is never read. Its value is meaningless. It exists so
+   that concurrent requests for one user collide.
+
+   VERIFIED, not assumed: an integration test fires 20 simultaneous requests
+   for one user and asserts exactly 3 grants, 17 RATE_LIMITED rows, and 20
+   total log rows.
+
+   One honest caveat: the transaction calls getCurrentNetworkPassword(),
+   which reads rotation_events WITHOUT the session, so that read does not
+   participate in the transaction snapshot. In practice this is harmless —
+   the worst case is handing out a password that was rotated microseconds
+   ago — but it is a real asymmetry rather than a deliberate optimisation.
+
+
+-------------------------------------------------------------------------------
+ SECTION 8 - ENCRYPTION AT REST
+-------------------------------------------------------------------------------
+
+src/lib/crypto/secret-box.ts
+
+Format:   v1:<iv-base64>:<tag-base64>:<ciphertext-base64>
+Cipher:   AES-256-GCM
+IV:       12 random bytes, fresh for every value
+Key:      32 bytes from PASSCODE_ENCRYPTION_KEY (base64), validated by Zod
+
+Why GCM rather than CBC: GCM is authenticated. The 16-byte tag means that
+modified ciphertext fails to decrypt rather than producing plausible garbage.
+Someone with write access to the database can destroy a stored password but
+cannot alter it into a chosen value undetected.
+
+Why the "v1:" prefix: it makes a future key rotation or algorithm change
+possible without guessing at old records.
+
+decryptSecret() catches the crypto failure and rethrows a generic message, so
+cipher internals never reach a log or a response.
+
+VERIFIED DIRECTLY: flipping a single bit in a stored ciphertext causes
+decryption to fail, and no stored ciphertext contains the plaintext.
+
+OPERATIONAL CONSEQUENCE: losing PASSCODE_ENCRYPTION_KEY makes every stored
+password permanently unreadable. This is recoverable in practice — run one
+rotation and a new readable password exists — but the history becomes opaque.
+
+
+-------------------------------------------------------------------------------
+ SECTION 9 - THE APPEND-ONLY AUDIT LOG
+-------------------------------------------------------------------------------
+
+Mongoose middleware on auditLogSchema refuses every write path except insert:
+
+  updateOne, updateMany, replaceOne, findOneAndUpdate, findOneAndReplace,
+  deleteOne, deleteMany, findOneAndDelete, saving an already-existing
+  document, and bulkWrite operations that are not inserts.
+
+Each throws AuditLogImmutableError.
+
+VERIFIED DIRECTLY: all four paths tried (updateOne, deleteOne,
+findOneAndUpdate, deleteMany) were refused; an integration test covers 14
+write paths.
+
+A practical consequence shows up in the test harness: integration tests cannot
+clear the collection through Mongoose. clearTestDatabase()
+(src/test/integration-db.ts) drops down to the raw driver
+(model.collection.deleteMany) precisely because the Mongoose layer refuses.
+
+THE HONEST LIMITATION, recorded deliberately in TASKLIST.md: this is
+application-level enforcement. A true append-only guarantee needs a MongoDB
+user without update/delete privileges on the collection, which was out of
+scope for a local demo. Anyone with direct database access can still rewrite
+history. The middleware protects against application bugs and misuse through
+the app; it is not a defence against a database administrator.
+
+
+
+###############################################################################
+ PART III - THE CODE
+###############################################################################
+
+
+-------------------------------------------------------------------------------
+ SECTION 10 - ENVIRONMENT VALIDATION
+-------------------------------------------------------------------------------
+
+src/lib/env.ts defines THREE Zod schemas rather than one, and the split is
+deliberate:
+
+  serverEnvSchema    DATABASE_URL, DATABASE_NAME, NODE_ENV
+  rotationEnvSchema  PASSCODE_ENCRYPTION_KEY, ROUTER_ADAPTER,
+                     VIRTUAL_ROUTER_FAILURE, ROTATION_SCHEDULER_ENABLED
+  chatEnvSchema      CHAT_PROVIDER, GEMINI_API_KEY, ANTHROPIC_API_KEY,
+                     GEMINI_MODELS, PASSCODE_NETWORK_NAME,
+                     PASSCODE_SUPPORT_CONTACT
+
+Splitting means code that only needs the database is not forced to supply an
+encryption key or a model API key. `npm run db:sync` works with nothing but
+DATABASE_URL.
+
+Two schemas do more than validate — they TRANSFORM:
+
+  PASSCODE_ENCRYPTION_KEY is validated as 32 bytes of base64 and handed to
+  the application as a Buffer, so no caller ever repeats the decoding.
+
+  GEMINI_MODELS is a comma-separated string in the environment and a string
+  array in the application, split and trimmed once.
+
+
+-------------------------------------------------------------------------------
+ SECTION 11 - THE ERROR TAXONOMY
+-------------------------------------------------------------------------------
+
+PassCode does not throw bare Errors across layers. Each error class carries
+enough information for the boundary to turn it into the right response, which
+is why the same feature function can serve a page, an action and an API route.
+
+  AccessDeniedError (features/auth/errors.ts)
+    status 401 | 403, code "unauthenticated" | "session_invalid" | "forbidden"
+    Thrown by authorizeSession(). Each of the three wrappers handles it
+    differently: pages redirect, actions return a message, routes return JSON.
+
+  UserActionError
+    code -> HTTP status, mapped in route-guard.ts:
+      invalid_input       400
+      user_not_found      404
+      email_taken         409
+      invalid_status      409
+      cannot_modify_self  409
+      last_admin          409
+
+  ChatProviderError (features/chat/providers/types.ts)
+    Carries `status` and, crucially, `retryable`. The chat route turns a
+    retryable error into "the assistant is busy, try again in a minute" and
+    anything else into a generic failure, with details going to the server log.
+
+  RotationInProgressError / RotationSupersededError
+    Not failures. They mean "another rotation is happening" and "a newer
+    rotation already won". The scheduler reports them as reasons, not errors.
+
+  SettingsConflictError
+    "Someone else changed this; reload."
+
+  AuditLogImmutableError
+    A programming error by definition — nothing should ever try to mutate the
+    audit log.
+
+The general rule visible throughout: expected outcomes are VALUES (result
+objects with ok: true/false), and only exceptional conditions are exceptions.
+requestNetworkPassword() returns a discriminated union rather than throwing on
+a rate limit, because being rate-limited is a normal outcome.
+
+
+-------------------------------------------------------------------------------
+ SECTION 12 - AUTHENTICATION AND AUTHORIZATION, IN DETAIL
+-------------------------------------------------------------------------------
+
+THE PROBLEM WITH JWT SESSIONS
+
+Sessions are JWTs (12-hour lifetime, src/auth.ts). A JWT is self-contained:
+the server validates the signature and trusts the contents. That is fast and
+stateless, and it has one fatal property for this application — you cannot
+take it back. Revoking someone would leave them with a working token for up to
+twelve hours, which defeats the point of the product.
+
+THE SOLUTION: A VERSION NUMBER
+
+  - users.tokenVersion starts at 0.
+  - At sign-in, the current tokenVersion is baked into the JWT.
+  - EVERY protected request re-reads the user from the database and requires
+    status === "ACTIVE" AND user.tokenVersion === claims.tokenVersion.
+  - Revoking, changing a role, or resetting a password does $inc on
+    tokenVersion.
+
+The moment tokenVersion is incremented, every previously issued token for that
+user mismatches and is rejected on its next use. No session store, no
+blacklist, no waiting for expiry.
+
+Note that reinstating a user ALSO increments tokenVersion. A user who is
+revoked and then reinstated does not get their old session back; they sign in
+again. That is the safer default.
+
+THE SINGLE CHOKE POINT
+
+authorizeSession() in features/auth/session-guard.ts is the only place this is
+implemented. Its sequence:
+
+  1. No userId                      -> 401 unauthenticated
+  2. Malformed id, or tokenVersion
+     is not a number               -> 401 session_invalid
+  3. Load the user
+  4. Missing, not ACTIVE, or
+     version mismatch              -> audit + 401 session_invalid
+  5. level === "admin" and role
+     is not ADMIN                  -> audit + 403 forbidden
+  6. Return AuthorizedUser
+
+Steps 4 and 5 write an "auth.access_denied" audit entry with the reason, so
+refusals are visible to an administrator.
+
+THREE WRAPPERS, ONE CHECK
+
+  requirePageAccess(level, path)      pages
+      "forbidden" -> redirect("/?denied=admin")
+      anything else -> redirect("/login?next=<path>")
+
+  requireActionAccess(level, path)    server actions
+      Returns { ok: false, error } instead of redirecting, because a server
+      action that redirects on an expired session produces a confusing
+      experience mid-form.
+
+  withAuth(level, handler)            API routes
+      Returns JSON with the right status. Additionally rejects
+      state-changing cross-origin requests BEFORE authenticating.
+
+getSessionUser() is the read-only variant used by layouts and the landing
+page: it returns the user or null rather than redirecting.
+
+Both dal.ts helpers wrap their work in React's cache(), so a page that checks
+access and then renders several components performs ONE session read per
+request rather than one per call.
+
+WHY LAYOUTS CANNOT BE TRUSTED
+
+src/app/admin/layout.tsx has a comment worth internalising: "Only the shell.
+Access is checked by every page and action." In the App Router, layouts do not
+re-render on client-side navigation. A layout-level guard would run on first
+load and then not again, so a session that expires mid-visit would still see
+admin pages. Hence every page calls requirePageAccess() itself.
+
+LOGIN, STEP BY STEP (features/auth/login.ts)
+
+  1. Zod-validate; lowercase and trim the email.
+  2. Count audit_log entries with action "auth.login.failed" and
+     target=<email> in the last 15 minutes. Five or more -> refuse with
+     "too_many_attempts". THIS HAPPENS BEFORE THE PASSWORD CHECK, so a
+     locked account cannot be probed.
+  3. Look up the user WITH the password hash (.select("+passwordHash")).
+  4. Verify with bcrypt (12 rounds). If there is no user or no hash, verify
+     against a cached DUMMY hash anyway, so the response time is the same. An
+     attacker cannot discover which addresses are registered by timing.
+  5. Only now check status: PENDING and REVOKED produce their own messages.
+     Account status is therefore only disclosed to someone who already knows
+     the password.
+  6. Log success or failure to audit_log and return.
+
+PASSWORD POLICY (features/auth/password-rules.ts)
+
+  Minimum 12 characters. Maximum 72 BYTES — not a stylistic limit: bcrypt
+  silently ignores everything past 72 bytes, so accepting more would create
+  passwords that appear long but are not. The password may not equal the
+  email address. The module deliberately excludes the bcrypt import so the
+  browser can run the same checks.
+
+PRIVILEGE PROTECTION
+
+  - assertNotSelf: admins cannot revoke or demote themselves.
+  - assertAnotherActiveAdmin: the last ACTIVE admin cannot be revoked or
+    demoted — checked INSIDE the transaction, so two admins cannot
+    simultaneously demote each other and leave the system with none.
+  - assertAdmin is re-checked inside feature functions even though routes
+    already enforce it, so a future wiring mistake cannot silently open a
+    hole.
+
+
+-------------------------------------------------------------------------------
+ SECTION 13 - THE ROTATION ENGINE, IN DETAIL
+-------------------------------------------------------------------------------
+
+PASSWORD GENERATION (features/rotation/password-generator.ts)
+
+CSPRNG-backed, 12-63 characters (default 20). Guarantees at least one
+character from every enabled class, and excludes look-alikes (0/O, 1/l/I) and
+awkward symbols. That exclusion is a usability requirement, not a stylistic
+one: this password gets read off a screen and typed into a phone keyboard by
+a resident, so ambiguous glyphs cause real support load.
+
+THE ROTATION SEQUENCE (rotation-service.ts)
+
+  0. Resolve the adapter and key; generate the password.
+  1. connectDb(), then failStaleRotations() — see below.
+  2. If supersededAfter was supplied, check whether a SUCCEEDED rotation
+     exists newer than that timestamp. If so, throw RotationSupersededError.
+  3. INSERT a PENDING rotation_events row containing the ENCRYPTED password.
+     A duplicate-key error here means another rotation is in progress ->
+     RotationInProgressError.
+  4. applyWithRetry(): call adapter.applyPassword(), up to
+     MAX_APPLY_ATTEMPTS = 2 (first try plus one retry), each wrapped in a
+     30-second timeout, with a 5-second delay between attempts.
+  5. In ONE transaction: update the row to SUCCEEDED or FAILED with attempts
+     and completedAt, and write the audit entry.
+
+WHY STORE BEFORE APPLYING (step 3 before step 4)
+
+If the order were reversed and the process died between applying and storing,
+the router would hold a password nobody knows. Storing first means the worst
+case is a password that was stored but never applied — recoverable, because
+the row stays PENDING and never becomes "current" (only SUCCEEDED counts).
+
+STALE ROTATIONS
+
+A crash between steps 3 and 5 leaves a PENDING row forever. Because of the
+one_pending_rotation unique index, that row would block ALL future rotations.
+failStaleRotations() runs at the start of every rotation and marks any PENDING
+row older than STALE_ROTATION_MS (10 minutes) as FAILED with "Rotation was
+interrupted before completing". The system heals itself.
+
+ERROR REDACTION
+
+describeError() removes the password from any error message before it is
+stored, then truncates to 500 characters. A buggy adapter that echoes the
+password into its exception cannot leak it into rotation history.
+
+THE ROUTER ADAPTER BOUNDARY
+
+    interface RouterAdapter {
+      readonly name: RouterAdapterName;
+      applyPassword(password: string): Promise<ApplyPasswordResult>;
+    }
+
+One method. The source comment states the constraint explicitly: password
+rotation is the ONLY hardware capability PassCode may use — no firmware, port
+or traffic operations. That is a scope guard written into the code so a future
+contributor does not quietly grow the surface.
+
+The contract: applyPassword MUST throw if the password was not applied, and
+error messages must never contain the password.
+
+manualApplicationRequired in the result distinguishes "the device now has this
+password" from "a human still has to enter it". The virtual router returns
+false; a hypothetical hardware adapter with no API could return true.
+
+THE VIRTUAL ROUTER records a SHA-256 fingerprint of the last applied password
+rather than the password itself, so tests can assert "the right password was
+applied" without holding plaintext.
+
+VIRTUAL_ROUTER_FAILURE turns it into a fault injector:
+  off            normal
+  always         every attempt throws -> rotation FAILS after 2 attempts
+  first-attempt  the first throws, the retry succeeds -> SUCCEEDED, attempts 2
+
+VERIFIED: both behave exactly as described.
+
+THE SCHEDULER (scheduler.ts + schedule.ts)
+
+A node-cron task with the expression "* * * * *" — every minute — created with
+{ noOverlap: true } so a slow tick cannot overlap the next.
+
+The scheduling decision is a PURE FUNCTION in schedule.ts with no database and
+no timers, which is why it can be unit-tested exhaustively:
+
+    evaluateSchedule({ schedule, now, lastSuccessAt, lastFailureAt })
+      -> { due: true }
+      -> { due: false, reason: "disabled" }
+      -> { due: false, reason: "not-yet-due" }
+      -> { due: false, reason: "retry-backoff" }     (failure < 30 min ago)
+      -> { due: false, reason: "outside-window" }
+
+Why a one-minute tick instead of a cron expression per schedule: cron cannot
+express "every 3 weeks". Intervals are computed as milliseconds since the last
+SUCCESS, which also means a failed rotation does not reset the clock.
+
+MAINTENANCE WINDOWS handle midnight wrap. The window is [start, end) in local
+time; if start < end it is a normal range, otherwise it wraps (22:00-06:00
+means "minute >= 1320 OR minute < 360"). start === end means the whole day.
+Local time is computed with Intl.DateTimeFormat in the configured timezone, so
+daylight-saving transitions are handled by the platform rather than by
+arithmetic.
+
+NOT-CONFIGURED IS A REAL STATE. runScheduledRotationCheck() returns
+{ due: false, reason: "not-configured" } when no settings document exists. A
+fresh deployment never rotates on defaults nobody chose — the first save is
+what switches automation on.
+
+TWO SERVERS, TWO SAFEGUARDS
+
+  - The one_pending_rotation index blocks OVERLAPPING rotations.
+  - supersededAfter blocks CONSECUTIVE ones. This closed a genuine bug found
+    in Phase 5: instance A reads state and decides to rotate; instance B
+    finishes its own rotation; instance A then starts. The rotations never
+    overlap, so the index does not help. The scheduler now passes the
+    lastSuccess timestamp its decision was based on, and the rotation aborts
+    if anything succeeded after it.
+
+DEPLOYMENT CHOICE: the scheduler runs either inside the Next.js server
+(ROTATION_SCHEDULER_ENABLED=true, launched from src/instrumentation.ts, with a
+globalThis guard so dev hot reloads do not start a second one) or as a
+separate process (npm run rotation:worker, which handles SIGINT/SIGTERM and
+shuts cron down cleanly). The worker exists for hosts where the web server is
+not long-running.
+
+
+-------------------------------------------------------------------------------
+ SECTION 14 - THE CHAT SUBSYSTEM, IN DETAIL
+-------------------------------------------------------------------------------
+
+Five modules, in the order a request meets them.
+
+1. access.ts — WHO
+   resolveChatAccess() loads the user and checks ACTIVE + tokenVersion. On
+   failure it returns a FIXED, hand-written reply (no model involved) and
+   logs a denied password_request. Those logged denials are themselves rate
+   limited (10 per user-or-IP per 10 minutes) so the request log cannot be
+   used as a flood target.
+
+   Note the key choice: `user:<id>` when the person is identifiable,
+   `ip:<addr>` otherwise. A signed-in-but-revoked user is limited by identity,
+   not by address.
+
+2. rate-limit.ts — HOW OFTEN
+   A small in-memory sliding-window limiter. Two instances:
+     userMessageLimiter   20 per user per 10 minutes
+     anonymousLimiter     10 per key per 10 minutes
+   It self-prunes once the map exceeds 10,000 keys.
+
+   EXPLICITLY per-process. With several server instances each counts
+   separately, so the effective limit multiplies. That is acceptable because
+   this limiter guards COST, not the secret. The limit that guards the secret
+   lives in the database.
+
+3. history.ts — WHAT
+   A Zod schema for what the browser may send: 1-20 turns, each 1-2000
+   characters, roles strictly alternating and starting with "user", last turn
+   from "user".
+
+   THE SECURITY POINT: the schema accepts ONLY plain text turns. Tool calls
+   and tool results are not representable, so a tampered client cannot inject
+   a fabricated tool result such as "the password is X" and have it treated as
+   trusted context. An integration test specifically attempts this and gets
+   400.
+
+4. chat-service.ts — THE TURN
+   Builds the system prompt, then loops up to MAX_TOOL_ROUNDS = 5:
+     send() -> refusal? return fixed refusal text
+            -> text?    return it
+            -> tools?   run each, feed results back, loop
+
+   The person's display name is appended as
+   `The person's display name, as they entered it: "<json>"` — quoted as
+   DATA. A user who names themselves "ignore your instructions" gets that
+   string treated as a name.
+
+   `alreadyShown` ensures at most ONE reveal per turn even if the model calls
+   the tool repeatedly.
+
+   If the loop exhausts all five rounds, it returns a graceful message — and
+   still returns the reveal if one was granted, so a user is never charged a
+   disclosure without receiving it.
+
+5. password-access.ts — MAY THEY (Section 7)
+
+THE THREE TOOLS (prompt.ts)
+
+  show_network_password       -> "Shown"/"Not shown" + reason. NEVER the password.
+  get_rotation_info           -> when it last changed, the schedule, next due
+  get_my_password_requests    -> the caller's own last 7 days + remaining allowance
+
+All three take ZERO arguments. There are no parameters to inject through, and
+no identifier the model could tamper with: get_my_password_requests is scoped
+in code to context.user.id. The model cannot ask about anyone else because
+there is no way to express the question.
+
+THE PROVIDER SEAM (providers/)
+
+    interface ChatModelSession {
+      send(): Promise<ModelReply>;
+      provideToolResults(results: ToolOutcome[]): void;
+    }
+
+    type ModelReply =
+      | { type: "text"; text: string }
+      | { type: "tool_calls"; calls: ModelToolCall[] }
+      | { type: "refusal" };
+
+The session — not the caller — owns the conversation, because each vendor
+requires its own message format echoed back verbatim (Anthropic wants its
+content blocks including thinking blocks; Gemini wants its parts). A single
+shared representation would corrupt one of them.
+
+This is what makes the vendor swap safe: runChatTurn() contains the tool loop,
+the authorization gate and the reveal logic, and it cannot move into a
+provider. Changing vendors cannot accidentally relocate a security control.
+
+GEMINI SPECIFICS, all discovered by building against it:
+  - a tool call arrives with finishReason STOP, so calls are detected via
+    functionCalls, never the finish reason;
+  - tool results are sent back as a "user"-role content containing
+    functionResponse parts, because the SDK's Content.role allows only
+    "user" and "model";
+  - blocked answers (SAFETY, PROHIBITED_CONTENT, BLOCKLIST, SPII, RECITATION,
+    IMAGE_SAFETY) map to the same fixed refusal reply as Anthropic's refusal;
+  - stateless models.generateContent is used, not the server-stateful
+    interactions API, so NO conversation state is kept at the provider;
+  - the free tier fails per model: 503 under load, 429 once a model's daily
+    quota is gone. GEMINI_MODELS is walked in order, twice, with a 1.5s pause
+    between passes. Every entry must be a DISTINCT, still-serving model: an
+    alias such as gemini-flash-latest shares the newest model's quota, and a
+    retired model returns 404 — which is NOT retryable and ends the walk;
+  - a dropped connection carries no HTTP status (undici raises a TypeError
+    "fetch failed"), so it is detected by walking the error's `cause` chain
+    and retried like a 503.
+
+The Anthropic provider needs none of this walking because its SDK retries
+transport errors internally.
+
+
+-------------------------------------------------------------------------------
+ SECTION 15 - SETTINGS AND OPTIMISTIC CONCURRENCY
+-------------------------------------------------------------------------------
+
+saveRotationSettings(actor, input, expectedVersion) takes the version the
+admin was looking at. Inside a transaction it compares that against the stored
+__v and throws SettingsConflictError on mismatch.
+
+One subtlety worth knowing: Mongoose only auto-increments __v for array
+changes, so the code calls target.increment() explicitly on every save.
+Without that, the version would never change and the conflict check would
+never fire.
+
+Validation is layered: Zod checks ranges and enums; a refine() enforces
+"rotate at least once a year"; another enforces that the window's start and
+end are either both set or both null; and the timezone is validated by
+actually constructing an Intl.DateTimeFormat with it.
+
+
+-------------------------------------------------------------------------------
+ SECTION 16 - THE "MODEL NEVER SEES THE PASSWORD" PROPERTY
+-------------------------------------------------------------------------------
+
+This is the system's most distinctive security property, so here is the exact
+mechanism.
+
+When the model calls show_network_password, runTool() returns to the MODEL:
+
+    "Shown. The current password is now displayed to the person in a separate
+     panel below your reply; you don't know it and must not write any
+     password. It was last changed <ISO timestamp> ... The request was logged."
+
+and separately returns to the APPLICATION:
+
+    granted: { password: "...", rotatedAt: ... }
+
+The application attaches that to ChatResult.reveal. The route serialises
+{ reply, reveal } to the browser. The browser renders `reveal` in its own
+panel.
+
+The password therefore travels: database -> Node process -> HTTP response ->
+browser. It never enters the conversation that is sent to the provider.
+
+Consequences:
+  - Prompt injection cannot extract it. The model cannot reveal what it was
+    never given.
+  - No password is ever transmitted to Google or Anthropic.
+  - The model cannot hallucinate a real password into existence; the panel
+    shows the value the database returned, and the prompt forbids writing
+    passwords in text.
+
+VERIFIED against the real model: the live check records every outbound payload
+of a real run and asserts the password appears in none of them.
+
+The browser-side half matters too: chat-client.ts builds the outgoing history
+from `role` and `content` ONLY. The `reveal` field is never echoed back on the
+next turn.
+
+
+-------------------------------------------------------------------------------
+ SECTION 17 - ADMIN READ MODELS AND ANOMALY DETECTION
+-------------------------------------------------------------------------------
+
+features/admin/activity.ts holds read-only projections for the admin app, kept
+separate from the write paths.
+
+getAnomalies() issues SIX queries in parallel and assembles a list:
+
+  1. Heavy users — a MongoDB aggregation over granted requests in 24h,
+     grouped by user, keeping those above 5, joined to users for the email.
+  2. Denied requests in the last hour (threshold 10).
+  3. Failed logins in the last hour (threshold 20).
+  4. The newest non-PENDING rotation (to detect a failure).
+  5. Count of PENDING accounts.
+  6. Users who hit the hourly password limit in 24h.
+
+Results become Anomaly objects with level "warning" or "info", a title, a
+detail and often a href deep-linking to a filtered page
+(e.g. /admin/requests?show=denied).
+
+The thresholds are deliberately simple and centralised in ANOMALY_THRESHOLDS.
+
+WHY "heavy user" IS THE MOST IMPORTANT ALERT: someone requesting the password
+five-plus times a day is the signature of the exact behaviour PassCode exists
+to stop — one person collecting it and relaying it to others. The alert text
+says so in plain language on the dashboard.
+
+The same function feeds two surfaces: full alert cards on the dashboard, and a
+compact badge (warnings only) in the header of EVERY admin page via
+AdminAlerts, rendered inside <Suspense> so a slow aggregation does not delay
+the page shell.
+
+
+
+###############################################################################
+ PART IV - THE CLIENT
+###############################################################################
+
+
+-------------------------------------------------------------------------------
+ SECTION 18 - WHAT RUNS WHERE
+-------------------------------------------------------------------------------
+
+Server components (the majority): every page.tsx, both layouts, AdminAlerts.
+They read the database directly.
+
+Client components ("use client"): LoginForm, RegisterForm, ChatClient,
+RevealPassword, RotateNowButton, SettingsForm, UserActions, AddUserDialog,
+LocalTime, AutoRefresh.
+
+The pattern throughout: a server component fetches and renders, and hands the
+interactive fragment to a small client component. The dashboard is a server
+component; only the reveal button and the rotate button are client code.
+
+LocalTime deserves a note. Timestamps are rendered by a CLIENT component on
+purpose: the server does not know the viewer's timezone, so server-rendering a
+local time would produce a hydration mismatch and the wrong answer for anyone
+not in the server's zone.
+
+
+-------------------------------------------------------------------------------
+ SECTION 19 - THE THREE CLIENT-TO-SERVER PATTERNS
+-------------------------------------------------------------------------------
+
+PassCode uses exactly three, each suited to its job.
+
+1. FORM + SERVER ACTION + useActionState  (login, register)
+
+     const [state, action, pending] = useActionState(loginAction, undefined);
+     <form action={action}>
+
+   Works without JavaScript, gives a pending flag for free, and returns
+   { error } or { message } to display. Used where the interaction is a
+   classic form submission.
+
+2. useTransition + SERVER ACTION  (all admin mutations)
+
+     const [pending, startTransition] = useTransition();
+     startTransition(async () => {
+       const result = await revealPasswordAction();
+       ...
+     });
+
+   Used where a button triggers a mutation and the result must be inspected.
+   Every such action returns ActionResult<T> — { ok: true, data } or
+   { ok: false, error } — never throws across the boundary.
+
+   After a successful admin mutation, adminAction() calls
+   revalidatePath("/admin", "layout"), so the server re-renders the affected
+   pages and the table updates without a manual refetch.
+
+   revealPasswordAction() deliberately does NOT revalidate: nothing on the
+   page changed, and revalidating would be pointless work on a sensitive path.
+
+3. fetch TO A ROUTE HANDLER  (the chat)
+
+   The chat needs a real request/response with status codes (401, 403, 429,
+   503), so it posts JSON to /api/chat and branches on the result. A server
+   action would obscure those distinctions.
+
+
+-------------------------------------------------------------------------------
+ SECTION 20 - PAGE BY PAGE, FROM THE VISITOR'S SIDE
+-------------------------------------------------------------------------------
+
+/  (landing, server component)
+    Redirects an ADMIN to /admin and any other signed-in user to /chat, so the
+    landing page is only ever seen by visitors — plus one exception: arriving
+    with ?denied=admin shows "That page is only for administrators." even when
+    signed in, which is how a non-admin learns why they were bounced.
+
+/login
+    Redirects to `next` if already signed in. The `next` parameter is passed
+    through safeRedirectPath(), which accepts only same-site paths: the regex
+    /^\/(?![/\\])/ rejects absolute URLs, protocol-relative //evil.example and
+    backslash tricks /\evil.example. Open-redirect closed.
+    Errors are mapped to human sentences: wrong credentials, awaiting
+    approval, revoked, or locked out for 15 minutes.
+
+/register
+    Collects email, optional name, password and confirmation. Confirmation is
+    compared client-side before submission. On success it always shows the
+    same "registration received" message — even if the email already exists —
+    so the form cannot be used to discover accounts.
+
+/chat
+    OPEN TO EVERYONE. The header shows Sign in, or the email plus Sign out,
+    plus an "Admin" link for admins. The body is ChatClient with four
+    suggestion chips.
+
+    On a denial the assistant's bubble carries sign-in and request-access
+    buttons, so a visitor is told what to do rather than just refused.
+
+    The turn is marked `excluded` whenever the response was not ok, so
+    refusals, rate-limit notices and errors are DISPLAYED but not sent back as
+    conversation history — the model never sees the system's own error text.
+
+    The client also trims history to the server's own limits (20 turns, must
+    start with "user") before sending, so a long conversation degrades
+    gracefully instead of being rejected.
+
+/admin  (all pages admin-gated individually)
+    Dashboard: alert cards, a rotation card (last rotation with status badge,
+    current-password age, next rotation), and a card with Reveal and
+    Rotate now.
+    /admin/rotation: schedule form, rotate-now, history table.
+    /admin/users: status filter tabs with counts, a table, per-row actions,
+    and Add user.
+    /admin/requests: the request log with All/Granted/Denied filters and
+    human labels for denial reasons ("Not signed in", "Too many requests").
+
+    Every admin page is wrapped by AutoRefresh, which calls router.refresh()
+    once a minute — but ONLY while document.visibilityState === "visible", so
+    background tabs do not poll. Because it is a server-data refresh rather
+    than a reload, a half-typed form survives.
+
+
+-------------------------------------------------------------------------------
+ SECTION 21 - HOW THE PASSWORD BEHAVES IN THE BROWSER
+-------------------------------------------------------------------------------
+
+Two places display it, and both follow the same discipline.
+
+THE ASSISTANT'S PANEL (chat-client.tsx)
+  - Rendered from the `reveal` field, never from the reply text.
+  - Its own bordered panel with a monospace, selectable value.
+  - Copy button using navigator.clipboard, with the failure swallowed
+    (clipboard access can be denied; that must not break the page).
+  - A 60-second countdown, after which it is replaced by "The password was
+    hidden. Ask again if you need it (each request is logged)."
+  - A manual hide button.
+  - Never included in the next request.
+
+THE ADMIN REVEAL (reveal-password.tsx)
+  - Behind an AlertDialog confirmation that states plainly: "This is recorded
+    in the audit log with your name."
+  - Same 60-second auto-hide, same copy button.
+  - If no password exists yet: "There is no password yet. Rotate once to
+    create one."
+
+Neither stores the password anywhere persistent — no localStorage, no
+sessionStorage, no cookie. It lives in React state and disappears with it.
+
+
+-------------------------------------------------------------------------------
+ SECTION 22 - WHAT THE BROWSER IS TRUSTED WITH
+-------------------------------------------------------------------------------
+
+Nothing security-relevant. Stated explicitly because it is easy to assume
+otherwise from reading the client code:
+
+  - The client trims history to 20 turns — AND the server re-validates.
+  - The client checks the password confirmation field — AND the server
+    applies the real policy.
+  - The client hides the chat input for signed-out users in some states — AND
+    the server refuses regardless.
+  - The client knows `signedIn` — but that only styles the page; the API
+    re-derives identity from the session cookie on every call.
+
+Every client-side constraint is a usability affordance duplicated by a server
+check. The comment in chat-client.ts ("Keep in sync with the server's limits")
+is about user experience, not enforcement.
+
+
+
+###############################################################################
+ PART V - COMPLETE WORKFLOWS, END TO END
+###############################################################################
+
+Each workflow below traces one real path through every layer: what the person
+does, what code runs, what the database records, and what comes back.
+
+
+-------------------------------------------------------------------------------
+ SECTION 23 - WORKFLOW: A NEW RESIDENT GETS ACCESS
+-------------------------------------------------------------------------------
+
+  1. The resident opens /register and submits email, name, password twice.
+
+  2. registerAction (server action) compares the two passwords, then calls
+     registerUser().
+
+  3. registerUser -> createUser():
+       - checkPasswordPolicy: >= 12 chars, <= 72 bytes, not the email
+       - bcrypt hash, 12 rounds
+       - IN A TRANSACTION:
+           insert users { status: "PENDING", role: "USER", tokenVersion: 0 }
+           insert audit_log { action: "user.registered" }
+     A duplicate email raises 11000, which becomes UserActionError
+     "email_taken" — and the action SWALLOWS that specific code and returns
+     the success message anyway.
+
+  4. The resident sees "Registration received..." and cannot yet sign in:
+     login refuses PENDING accounts with "waiting for an administrator".
+
+  5. The admin's dashboard now shows an info alert, "1 account waiting for
+     approval", linking to /admin/users?status=PENDING.
+
+  6. The admin clicks Approve -> approveUserAction -> requireActionAccess
+     ("admin") -> approveUser():
+       - asserts status is PENDING (otherwise invalid_status, 409)
+       - IN A TRANSACTION: set status ACTIVE + audit "user.approved"
+     Note: approval does NOT touch tokenVersion — there is no session to
+     invalidate.
+
+  7. revalidatePath("/admin", "layout") re-renders; the row shows Active.
+
+  8. The resident signs in and lands on /chat.
+
+
+-------------------------------------------------------------------------------
+ SECTION 24 - WORKFLOW: A USER ASKS THE ASSISTANT FOR THE PASSWORD
+-------------------------------------------------------------------------------
+
+The system's central path. "Wi-Fi password please" from a signed-in,
+approved user.
+
+  BROWSER
+  1. ChatClient appends the turn, builds history from role/content only, and
+     POSTs { messages } to /api/chat.
+
+  SERVER — GATES
+  2. isSameOrigin(): Origin absent (same-origin fetch) or matching -> pass.
+     Otherwise 403 cross_origin_request.
+  3. Extract the client IP from x-forwarded-for.
+  4. auth() decodes the session cookie -> { userId, tokenVersion }.
+  5. resolveChatAccess(): load the user; ACTIVE and tokenVersion matches ->
+     allowed.
+  6. userMessageLimiter.hit(userId): over 20 in 10 minutes -> 429 with a
+     retryAt.
+  7. chatHistorySchema.safeParse(): malformed or non-alternating -> 400.
+
+  SERVER — THE TURN
+  8. createChatProvider() (cached in a module variable across requests) picks
+     Gemini or Anthropic.
+  9. runChatTurn() builds the system prompt plus the quoted display name and
+     opens a session.
+ 10. session.send() -> the model asks for show_network_password.
+
+  SERVER — THE GATE THAT MATTERS
+ 11. requestNetworkPassword():
+       - start a transaction
+       - findOneAndUpdate the user with $inc passwordRequestSeq (the collision
+         point — Section 7), re-reading status and tokenVersion
+       - not ACTIVE / version mismatch -> log REVOKED or NOT_AUTHORIZED,
+         return refusal
+       - count granted password_requests in the last hour; >= 3 -> log
+         RATE_LIMITED, return retryAt
+       - getCurrentNetworkPassword(): newest SUCCEEDED event, decrypt
+       - insert password_requests { granted: true, sourceIp }
+       - commit
+ 12. The tool returns "Shown..." TO THE MODEL and the password TO THE APP.
+ 13. provideToolResults() appends the result in the vendor's format;
+     session.send() again.
+ 14. The model writes a sentence such as "The password is in the panel below."
+
+  RESPONSE
+ 15. { reply, reveal: { password, rotatedAt } }, Cache-Control: no-store.
+ 16. The browser renders the reply and the panel; the panel hides after 60s.
+
+  WHAT WAS RECORDED: exactly one password_requests row with granted: true.
+  WHAT THE PROVIDER SAW: the conversation, the system prompt, the display
+  name, and "Shown" — not the password.
+
+
+-------------------------------------------------------------------------------
+ SECTION 25 - WORKFLOW: SOMEONE WITHOUT ACCESS ASKS
+-------------------------------------------------------------------------------
+
+A visitor who is not signed in, or whose account was revoked, opens /chat and
+asks for the password.
+
+  1. The page renders for them — /chat is public.
+  2. POST /api/chat; auth() yields no session (or a stale one).
+  3. resolveChatAccess() finds no user, or a REVOKED one.
+  4. anonymousLimiter.hit("ip:<addr>" or "user:<id>"): if under 10 per 10
+     minutes, insert password_requests { granted: false,
+     denialReason: "UNAUTHENTICATED" | "REVOKED", sourceIp }. Over the limit,
+     the refusal still happens but is not logged again — the log cannot be
+     flooded.
+  5. Return a FIXED string — denialReply() — with NO model call at all:
+       UNAUTHENTICATED: "I can only give the Wi-Fi password to people signed
+       in with an approved account. Sign in, or request access and wait for an
+       administrator to approve it. For help, contact <support contact>."
+       REVOKED: "Your access to the building Wi-Fi has been revoked... If you
+       think this is a mistake, contact <support contact>."
+  6. HTTP 401 for UNAUTHENTICATED, 403 for REVOKED, both with
+     { denied: <reason> }.
+  7. The browser marks the exchange `excluded` and renders Sign in /
+     Request access buttons beneath the message.
+  8. The attempt appears on /admin/requests labelled "Not signed in" or
+     "Access revoked".
+
+  Two things worth noting: no API cost is incurred for unauthorized traffic,
+  because the model is never called; and the refusal text is a fixed string,
+  so it cannot be talked around.
+
+
+-------------------------------------------------------------------------------
+ SECTION 26 - WORKFLOW: A SCHEDULED ROTATION
+-------------------------------------------------------------------------------
+
+  1. Every minute, the cron task calls runScheduledRotationCheck().
+  2. Load rotation_settings; absent -> "not-configured", stop.
+  3. Load the newest SUCCEEDED and newest FAILED events in parallel.
+  4. evaluateSchedule():
+       enabled? interval elapsed since last success? at least 30 minutes
+       since the last failure? inside the window?
+     Any "no" returns a reason and the tick ends silently.
+  5. rotateNetworkPassword({ trigger: "SCHEDULED", source: "scheduler",
+     supersededAfter: lastSuccess.createdAt }).
+  6. Generate -> failStaleRotations() -> superseded check -> insert PENDING
+     with ciphertext -> adapter.applyPassword() (up to 2 attempts, 30s each)
+     -> transaction: mark SUCCEEDED/FAILED + audit.
+  7. Log a line to the console.
+  8. Within a minute, any open admin page auto-refreshes and shows the new
+     rotation.
+
+  If another instance is mid-rotation: 11000 -> RotationInProgressError ->
+  reported as reason "in-progress". If another instance already finished one:
+  RotationSupersededError -> reason "superseded". Neither is an error.
+
+  IMPORTANT USER-FACING CONSEQUENCE: after a rotation, everyone's devices stop
+  connecting. They open the assistant and ask for the new password. This is
+  the intended cycle, and it is why the assistant's advice includes "forget
+  the network on each device and reconnect".
+
+
+-------------------------------------------------------------------------------
+ SECTION 27 - WORKFLOW: AN ADMIN REVEALS THE CURRENT PASSWORD
+-------------------------------------------------------------------------------
+
+  1. The admin clicks Reveal; a dialog warns that this is logged by name.
+  2. Confirm -> revealPasswordAction() -> requireActionAccess("admin").
+  3. revealCurrentPassword(actor):
+       - re-asserts actor.role === "ADMIN"
+       - getCurrentNetworkPassword() -> decrypt
+       - INSERT audit_log "password.viewed" with the event id and source,
+         BEFORE returning
+       - if there was no password, logs "password.view_empty" instead
+  4. The password is displayed for 60 seconds, with a copy button.
+
+  The ordering in step 3 is the point: the log entry is written before the
+  value is returned, so a disclosure cannot happen without a record. Even the
+  attempt to view when nothing exists is recorded.
+
+  A test asserts that the audit entries never contain the password itself.
+
+
+-------------------------------------------------------------------------------
+ SECTION 28 - WORKFLOW: REVOCATION WHILE THE PERSON IS USING THE APP
+-------------------------------------------------------------------------------
+
+The scenario the product exists for: an admin believes someone is relaying the
+password.
+
+  1. The admin sees "Unusually many password requests — maria@... requested
+     the password 7 times in the last 24 hours. They may be sharing it."
+  2. Revoke -> revokeUser():
+       - assertNotSelf
+       - status must not already be REVOKED
+       - if the target is an ADMIN, assertAnotherActiveAdmin (inside the
+         transaction)
+       - IN A TRANSACTION: status REVOKED, revokedAt now,
+         $inc tokenVersion, plus audit "user.revoked" with the reason
+  3. The user's JWT still exists and is still cryptographically valid. It is
+     now worthless: their tokenVersion in the database is 1, their token says
+     0.
+  4. Their very next action fails, whichever kind it is:
+       page          -> authorizeSession 401 -> redirect to /login
+       API route     -> 401 session_invalid
+       server action -> "Your session has ended. Sign in again."
+       chat          -> resolveChatAccess REVOKED -> 403 + the revoked text,
+                        logged as a denied request
+  5. If a chat turn was ALREADY IN FLIGHT when the revocation committed, the
+     re-check inside requestNetworkPassword() catches it and logs REVOKED.
+     This is why the check is repeated inside the password transaction rather
+     than trusted from the start of the request.
+  6. Reinstating sets ACTIVE, unsets revokedAt and increments tokenVersion
+     AGAIN — so the old session still does not come back.
+
+  Covered end-to-end by both an integration test and a Playwright test.
+
+
+-------------------------------------------------------------------------------
+ SECTION 29 - WORKFLOW: A ROTATION FAILS
+-------------------------------------------------------------------------------
+
+Simulate with VIRTUAL_ROUTER_FAILURE=always.
+
+  1. Generate, insert PENDING with the ciphertext.
+  2. applyPassword() throws "Virtual router: simulated failure".
+  3. Wait 5 seconds, retry, throws again. MAX_APPLY_ATTEMPTS reached.
+  4. describeError() redacts and truncates the message.
+  5. Transaction: status FAILED, attempts 2, errorMessage, completedAt, plus
+     audit "rotation.failed".
+  6. THE OLD PASSWORD IS STILL CURRENT — the FAILED event is not SUCCEEDED,
+     so getCurrentNetworkPassword() ignores it. Residents are unaffected;
+     nobody is locked out by a failure.
+  7. The dashboard shows a destructive alert, "The last password rotation
+     failed", with the router's message and a link to the history.
+  8. The header badge on every admin page shows the warning count.
+  9. The scheduler will not retry for 30 minutes (FAILED_ROTATION_RETRY_MS),
+     so a broken router produces one alert rather than a failure every minute.
+
+  VERIFIED: with VIRTUAL_ROUTER_FAILURE=first-attempt the retry succeeds and
+  the event records attempts: 2 with status SUCCEEDED.
+
+
+-------------------------------------------------------------------------------
+ SECTION 30 - WORKFLOW: TWO ADMINS EDIT SETTINGS AT THE SAME TIME
+-------------------------------------------------------------------------------
+
+  1. Both load /admin/rotation and receive version 3.
+  2. Admin A saves: transaction, stored __v (3) equals expected (3), save,
+     increment to 4, audit with before/after.
+  3. Admin B saves with expectedVersion 3: stored __v is now 4 -> mismatch ->
+     SettingsConflictError.
+  4. B sees "The settings were changed by someone else. Reload and try again."
+     B's change is not applied and A's is not silently overwritten.
+
+  An integration test asserts that with two simultaneous edits exactly one
+  wins. A related test runs six scheduler ticks overlapping settings saves and
+  asserts exactly one rotation results.
+
+
+-------------------------------------------------------------------------------
+ SECTION 31 - WORKFLOW: HITTING THE HOURLY PASSWORD LIMIT
+-------------------------------------------------------------------------------
+
+  1. Fourth request within the hour. The model calls show_network_password as
+     usual — it has no idea a limit exists.
+  2. requestNetworkPassword() counts 3 grants in the window and returns
+     { ok: false, reason: "RATE_LIMITED", retryAt } where retryAt is the
+     OLDEST grant in the window plus one hour (a true sliding window).
+  3. A password_requests row is inserted with denialReason RATE_LIMITED.
+  4. The tool result tells the model, in words: the person already got it
+     three times this hour, they can ask again after <time>, suggest saving
+     it on their devices.
+  5. The model explains this in the person's own language. No reveal field is
+     returned.
+  6. If the person keeps hitting the limit, the "Password limit reached"
+     anomaly surfaces to admins.
+
+  The division of labour is the point: the LIMIT is enforced by code, and the
+  EXPLANATION is generated by the model from a factual tool result. The model
+  cannot grant an exception, and the code does not need to compose prose.
+
+  VERIFIED against the real model: the refusal is issued, it explains the
+  limit, and the RATE_LIMITED row is written.
+
+
+
+###############################################################################
+ PART VI - OPERATIONS, TESTING, FAILURE MODES
+###############################################################################
+
+
+-------------------------------------------------------------------------------
+ SECTION 32 - RUNNING IT
+-------------------------------------------------------------------------------
+
+  npm install
+  cp .env.example .env        # fill in DATABASE_URL, PASSCODE_ENCRYPTION_KEY,
+                              # AUTH_SECRET, AUTH_URL, GEMINI_API_KEY
+  npm run db:sync
+  npm run user:create-admin -- --email you@example.com
+  npm run dev
+
+The scheduler is OFF by default. Set ROTATION_SCHEDULER_ENABLED=true to run it
+inside the server, or run `npm run rotation:worker` separately.
+
+
+-------------------------------------------------------------------------------
+ SECTION 33 - THE SCRIPTS, AND THEIR SAFETY RAILS
+-------------------------------------------------------------------------------
+
+  npm run db:sync
+      createCollection + syncIndexes on all five models; reports index counts
+      and any stale indexes it dropped. The MongoDB equivalent of migrations.
+
+  npm run user:create-admin -- --email <e> [--name "<n>"]
+      Creates an ACTIVE ADMIN. The password comes from a HIDDEN PROMPT, or
+      from PASSCODE_ADMIN_PASSWORD for non-interactive use. It is deliberately
+      NOT accepted as a command-line argument, which would put it in shell
+      history and in the process list.
+      VERIFIED: rejects --password, rejects a duplicate email, rejects a
+      password under 12 characters.
+
+  npm run rotate
+      One rotation, now. Prints the outcome and never the password; exits
+      non-zero on failure.
+
+  npm run rotation:worker
+      The scheduler as its own process, with clean SIGINT/SIGTERM shutdown.
+
+  npm run demo:seed
+      Six accounts, a schedule, one failed and one successful rotation, and
+      request history. DELETES EVERYTHING FIRST, so it refuses any database
+      whose name does not end in _demo or _test unless --force is passed.
+
+  npm run chat:live-check [-- --full]
+      Real turns against the configured provider. Same _demo/_test guard.
+      Removes the log rows it writes unless --keep.
+
+The naming convention is the safety mechanism: three separate scripts refuse
+to touch a database whose name does not end in _test or _demo, and the
+integration harness refuses anything not ending in _test. The production
+database is called "passcode", so none of them can touch it by accident.
+
+
+-------------------------------------------------------------------------------
+ SECTION 34 - THE TEST STRATEGY
+-------------------------------------------------------------------------------
+
+UNIT — 80 tests, ~3 seconds, no database.
+  Generator, scheduling rules, encryption, history validation, the limiter,
+  prompt and tool construction, and each provider's exact wire format
+  (Anthropic's betas/fallbacks/effort/strict tools and verbatim echo of
+  thinking blocks; Gemini's contents/functionDeclarations/functionResponse
+  round trip, refusal mapping, the 503 model walk and the transport retry).
+
+INTEGRATION — 74 tests, ~4 minutes, real MongoDB.
+  Config: testTimeout 30s, hookTimeout 60s, fileParallelism DISABLED (the
+  tests share one database and clear it between runs).
+  Covers: exact limits under 20 simultaneous requests, audit-log immutability
+  across 14 write paths, rotation races, settings conflicts, stale-rotation
+  recovery, and offboarding through the real route handlers with the session
+  and model mocked.
+
+END-TO-END — 8 Playwright tests, ~40 seconds.
+  Its own database passcode_e2e_test, seeded by e2e/global-setup.ts using the
+  same seedDemoData() the demo uses. Runs `next start` on port 3210 with the
+  SCHEDULER OFF, so a background rotation cannot change what a test is
+  looking at. Covers PRD flows A-E.
+  Flow C stubs the /api/chat response so the suite costs nothing and does not
+  depend on the network — what the password gate itself does is covered by the
+  integration tests.
+
+LIVE CHECK — 14 checks, 17 with --full.
+  The only thing that calls a real model. Wraps the provider in a RECORDING
+  CLIENT that captures every outbound payload, then asserts: the tool was
+  really called, the reveal matches the stored password, the reply contains no
+  password, the grant was logged, an out-of-scope request is declined, the
+  answer comes back in the asker's language — and the password appears in NO
+  outbound request.
+
+CI — three GitHub Actions jobs:
+  1. lint, format:check, typecheck, unit tests, build
+  2. integration against MongoDB started from docker-compose.yml
+  3. Playwright, with generated secrets and the report uploaded on failure
+
+
+-------------------------------------------------------------------------------
+ SECTION 35 - FAILURE MODES: WHAT BREAKS, AND WHERE TO LOOK
+-------------------------------------------------------------------------------
+
+  SYMPTOM                        CAUSE AND WHERE TO LOOK
+  -----------------------------  ---------------------------------------------
+  Everything DB-backed fails     Atlas IP allow-list, or a non-replica-set
+  at once                        MongoDB. Transactions need a replica set.
+
+  "Could not decrypt secret"     PASSCODE_ENCRYPTION_KEY changed. Old
+                                 passwords are unreadable; rotate once.
+
+  Rotations never happen         No settings saved yet ("not-configured"), or
+                                 ROTATION_SCHEDULER_ENABLED is not "true", or
+                                 the maintenance window excludes now, or a
+                                 failure occurred under 30 minutes ago.
+
+  Every rotation says            A PENDING row is stuck. It self-heals after
+  "in-progress"                  10 minutes via failStaleRotations().
+
+  Assistant returns 503          Provider unavailable or no API key. With
+                                 Gemini, the free tier 503/429s per model —
+                                 check GEMINI_MODELS holds several DISTINCT,
+                                 still-serving models. Details are in the
+                                 server log; the user sees a friendly message.
+
+  Assistant refuses a valid      The 3-per-hour limit. Check /admin/requests
+  user                           for RATE_LIMITED rows.
+
+  Admin actions say "session     tokenVersion mismatch — the account was
+  has ended"                     revoked, demoted, or had its password reset.
+
+  Integration tests time out     30s per-test budget, tight against a shared
+                                 Atlas cluster under concurrent load. Run the
+                                 suite without competing database work.
+
+USEFUL AUDIT QUERIES
+
+  Who saw the password?
+      audit_log where action = "password.viewed"
+  Who got it through the assistant?
+      password_requests where granted = true
+  Why was someone refused?
+      password_requests where granted = false, read denialReason
+  Who is being blocked, and from what?
+      audit_log where action = "auth.access_denied", read metadata.reason
+  What did this admin change?
+      audit_log where actor = <id>, sorted by createdAt
+
+
+-------------------------------------------------------------------------------
+ SECTION 36 - LIMITS, TRADEOFFS, AND OPEN QUESTIONS
+-------------------------------------------------------------------------------
+
+Recorded honestly, because each was a decision rather than an oversight.
+
+  * Only the virtual router ships. No physical hardware is supported.
+
+  * Audit-log immutability is enforced in application code, not by the
+    database (Section 9).
+
+  * In-memory rate limits count per process, so multiple instances multiply
+    the effective chat-message limit. The password limit is in the database
+    and is unaffected.
+
+  * The login lockout is per email address, so someone who knows an address
+    can lock it for 15 minutes.
+
+  * getCurrentNetworkPassword() is called inside the disclosure transaction
+    but reads without the session, so that one read is not part of the
+    transaction snapshot (Section 7).
+
+  * Anonymous visitors get a fixed explanation rather than general Q&A. The
+    PRD would have permitted general answers; this was left out to limit cost
+    and abuse surface.
+
+  * Google's free tier may use submitted content for product improvement. The
+    password never reaches the model, but chat text and display names do. Use
+    CHAT_PROVIDER=anthropic, or a paid tier, where that matters.
+
+  * Two questions remain open for the project owner, recorded in TASKLIST.md:
+    whether to add SSO alongside email/password (the data model already
+    allows it — passwordHash is optional), and whether admins should be able
+    to view the raw current password or only confirm rotation status.
+
+===============================================================================
+ END
+===============================================================================
