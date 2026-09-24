@@ -10,6 +10,7 @@ It is a **demo**: it runs locally, does not connect to physical network hardware
 
 - [What you need](#what-you-need)
 - [Quick start (demo data)](#quick-start-demo-data)
+- [Setting up `.env`](#setting-up-env)
 - [Environment variables](#environment-variables)
 - [Setting up without demo data](#setting-up-without-demo-data)
 - [Scripts](#scripts)
@@ -47,38 +48,17 @@ cd Pass-code
 npm install
 ```
 
-**2. Create your `.env`**
+**2. Create and fill in `.env`**
+
+Follow [Setting up `.env`](#setting-up-env) below. It takes a few minutes and ends with a complete example you can copy.
+
+**3. Start the database** (Docker option only; skip this if you use Atlas)
 
 ```bash
-cp .env.example .env
+docker compose up -d --wait
 ```
 
-(On Windows `cmd`, use `copy .env.example .env`.) `.env` is gitignored, so never commit it.
-
-**3. Get a database.** Pick one:
-
-- **Docker (easiest):** in `.env`, set `MONGO_ROOT_PASSWORD` to any password you make up, then set
-  `DATABASE_URL=mongodb://passcode:<that password>@127.0.0.1:27017/?authSource=admin&directConnection=true`
-  and start MongoDB with:
-
-  ```bash
-  docker compose up -d --wait
-  ```
-
-- **MongoDB Atlas:** create a free cluster and a database user, add your IP under **Network Access**, and paste the `mongodb+srv://…` string from **Connect → Drivers** into `DATABASE_URL`.
-
-**4. Fill in the rest of `.env`**
-
-| Variable                     | Set it to                                                                                  |
-| ---------------------------- | ------------------------------------------------------------------------------------------ |
-| `DATABASE_NAME`              | `passcode_demo` (the seeding command only runs against names ending in `_demo` or `_test`) |
-| `PASSCODE_ENCRYPTION_KEY`    | Output of `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`    |
-| `AUTH_SECRET`                | Output of `npx auth secret` (or run the same `node -e …` command above again)              |
-| `AUTH_URL`                   | `http://localhost:3000` (already set)                                                      |
-| `ROTATION_SCHEDULER_ENABLED` | `true` if you want scheduled rotations to run                                              |
-| `GEMINI_API_KEY`             | Your Google AI Studio key, if you want the assistant                                       |
-
-**5. Seed, build and start**
+**4. Seed, build and start**
 
 ```bash
 npm run demo:seed
@@ -104,6 +84,116 @@ For development with hot reload, run `npm run dev` instead of `build` + `start`.
 **Showing a rotation:** the seeded demo starts with four devices on the virtual Wi-Fi, one of them with no account. Put the admin dashboard's **On the network** panel next to a user's **Network** tab (for example, in a second browser profile signed in as `maria@passcode.demo`) and press **Rotate now**. Within a few seconds the admin list empties and the user's device reports it was dropped. The user then asks the assistant for the new password and reconnects.
 
 The guides [for administrators](docs/ADMIN.md) and [for people who need the Wi-Fi password](docs/USER.md) walk through the app itself.
+
+## Setting up `.env`
+
+The app reads its configuration from a file named `.env` in the project root. It holds secrets, so it is gitignored and every person creates their own. **Never commit it or share yours.**
+
+### Step 1: copy the template
+
+```bash
+cp .env.example .env
+```
+
+On Windows `cmd`, use `copy .env.example .env`. Open `.env` in any editor. Each line is `NAME=value`, with no quotes and no spaces around `=`. Lines starting with `#` are comments.
+
+### Step 2: generate the two secrets
+
+Run this command **twice** and paste one result into each variable:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+```ini
+PASSCODE_ENCRYPTION_KEY=<first output>
+AUTH_SECRET=<second output>
+```
+
+`PASSCODE_ENCRYPTION_KEY` encrypts the stored Wi-Fi password. If you change or lose it, the stored password can't be read anymore, and one rotation (`npm run rotate` or **Rotate now**) fixes that. `AUTH_SECRET` signs login sessions. Changing it signs everyone out.
+
+### Step 3: point it at a database
+
+Pick **one** of these options.
+
+**Option A: Docker (local, nothing to sign up for).** Make up a database password using only letters and digits (other characters would need escaping in the URL). Put it in **both** places:
+
+```ini
+MONGO_ROOT_PASSWORD=MyLocalPass123
+DATABASE_URL=mongodb://passcode:MyLocalPass123@127.0.0.1:27017/?authSource=admin&directConnection=true
+```
+
+`docker compose` reads `MONGO_ROOT_PASSWORD` from the same `.env` when it creates the database. It only reads it on first start, so if you change the password later, run `docker compose down -v` to wipe the old database first.
+
+**Option B: MongoDB Atlas (cloud, free tier).**
+
+1. Create a free cluster at [mongodb.com/atlas](https://www.mongodb.com/atlas).
+2. Under **Database Access**, add a database user with a password.
+3. Under **Network Access**, add your current IP address.
+4. Under **Connect → Drivers**, copy the connection string and put your user's password in place of `<db_password>`:
+
+```ini
+DATABASE_URL=mongodb+srv://myuser:mypassword@cluster0.abcde.mongodb.net/?retryWrites=true&w=majority
+```
+
+If the password contains characters like `@ : / ? # %`, [URL-encode](https://www.urlencoder.org/) it (for example `@` becomes `%40`). On Windows, if you later see `querySrv ECONNREFUSED`, see [Troubleshooting](#troubleshooting).
+
+### Step 4: choose the database name
+
+```ini
+DATABASE_NAME=passcode_demo
+```
+
+Use a name ending in `_demo` for the demo, because `npm run demo:seed` wipes the database and refuses any other name. Use something like `passcode` if you're setting up without demo data.
+
+### Step 5 (optional): the chat assistant
+
+Without a key, the whole app works except `/chat`. To turn it on, get a free key at [Google AI Studio](https://aistudio.google.com/apikey):
+
+```ini
+CHAT_PROVIDER=gemini
+GEMINI_API_KEY=<your key>
+```
+
+Or, to use Claude instead (needs paid Anthropic API credits):
+
+```ini
+CHAT_PROVIDER=anthropic
+ANTHROPIC_API_KEY=<your key>
+```
+
+### Step 6 (optional): scheduled rotations
+
+```ini
+ROTATION_SCHEDULER_ENABLED=true
+```
+
+This runs the rotation schedule inside the web server. Leave it `false` if you only want to rotate by hand with **Rotate now**.
+
+### Complete example
+
+A finished `.env` for the Docker demo looks like this. **Generate your own secrets. Don't copy the two below.**
+
+```ini
+DATABASE_URL=mongodb://passcode:MyLocalPass123@127.0.0.1:27017/?authSource=admin&directConnection=true
+DATABASE_NAME=passcode_demo
+MONGO_ROOT_USERNAME=passcode
+MONGO_ROOT_PASSWORD=MyLocalPass123
+MONGO_PORT=27017
+
+PASSCODE_ENCRYPTION_KEY=q3v8Xn0mYk2p9Lr4Tz7Wc1Hs6Bd5Fg0Jk8Mn3Qp2Rs4=
+ROUTER_ADAPTER=mock
+ROTATION_SCHEDULER_ENABLED=true
+VIRTUAL_ROUTER_FAILURE=off
+
+AUTH_SECRET=Zx9Wv8Ut7Sr6Qp5On4Ml3Kj2Ih1Gf0Ed9Cb8Az7Yx6=
+AUTH_URL=http://localhost:3000
+
+CHAT_PROVIDER=gemini
+GEMINI_API_KEY=AIza...your-key...
+```
+
+If something is missing or malformed, the app refuses to start and prints `Invalid server environment:` followed by the name of each bad variable. It never prints their values.
 
 ## Environment variables
 
@@ -132,7 +222,7 @@ About the Gemini free tier: it is rate- and capacity-limited, so requests come b
 
 To start from an empty database with your own admin account:
 
-1. Follow steps 1–4 of the quick start, but set `DATABASE_NAME` to something like `passcode`.
+1. Follow steps 1–3 of the quick start, but set `DATABASE_NAME` to something like `passcode`.
 2. `npm run db:sync` creates the collections and indexes.
 3. `npm run user:create-admin -- --email you@example.com` creates the first admin (it asks for a password).
 4. `npm run dev`, sign in, and save the rotation settings under **Admin → Rotation**. Nothing rotates until you do.
