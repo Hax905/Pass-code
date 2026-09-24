@@ -3,7 +3,7 @@
 
 **Version:** 1.0
 **Companion to:** PRD.md, STYLES.md
-**Last updated:** 2026-09-21
+**Last updated:** 2026-09-23
 
 ---
 
@@ -231,6 +231,32 @@ This file is the shared memory between Claude Code sessions. A session may pick 
 - [2026-09-21] [Completed] **Bug fixed: a stalled model hung the whole chat turn.** A Gemini call had no timeout, so a model that accepted the connection and then went quiet produced no status and no socket error — nothing the model walk could react to — and the turn never returned. Each attempt is now bounded (15 s) and a timeout counts as retryable, so the turn fails over to the next model. Two tests cover it: a lead model that never settles (asserting the exact models attempted) and every model stalling, which must surface as retryable so the route answers "the assistant is busy" instead of spinning — `src/features/chat/providers/gemini.ts`, `providers.test.ts`
 - [2026-09-21] [Pivot] **A lite model now leads `DEFAULT_GEMINI_MODELS`** (`gemini-3.5-flash-lite`, then 3.7/3.6/3.5/3.8-flash as spare capacity). The lead entry decides the assistant's latency, since a password request costs two round trips; measured on the same prompts, flash-lite answers in ~1–2 s against 7–14 s for the larger flash models, and the replies are a few sentences of plain text, so the extra capability bought nothing. Found because `gemini-3.8-flash` hit its daily 429 and every call was walking the list first: real turns were taking 18–104 s with 5–11 provider requests each, against 1–2 for a healthy turn — `src/features/chat/providers/gemini.ts`, `.env.example`, `STYLES.md` §2.6
 - [2026-09-21] [Completed] **Dark mode, user and admin sides.** shadcn had already shipped the `.dark` tokens and the `dark` variant; only the switching was missing. An inline script in `<head>` sets the class while the document is parsing, before first paint, so a dark-mode visitor never sees a white flash, and it is re-applied in a layout effect because React's dev-only Strict Mode remount resets `<html>` to the attributes it manages from JSX (per Next's preventing-flash-before-hydration guide). The toggle sits in the admin header, the chat header, the landing page and the login/register card, so the choice can be made before signing in; it follows the OS until someone picks a side. No new dependency, and no React state — both icons render and CSS picks one, so the server markup is correct under either theme. 3 end-to-end tests (11 total) — `src/components/theme-script.tsx`, `theme-toggle.tsx`, `src/app/layout.tsx`, `e2e/theme.spec.ts`
+
+---
+
+## Phase 7 — Virtual Wi-Fi (Demo Visibility)
+*Goal: make a rotation observable. Devices join the virtual router's Wi-Fi with the current password, and a rotation drops all of them. Requested 2026-09-23 for presenting the project; not in the original PRD phase plan.*
+
+- [x] `network_connections` collection: device, optional account, per-browser token, the rotation it joined with, status
+- [x] Virtual network module (`src/features/network/`) — connect, disconnect, per-browser state, admin list — with the `RouterAdapter` interface left untouched
+- [x] User-facing **Network** tab (`/network`), open to everyone, polling so a rotation shows up on its own
+- [x] Admin dashboard panel: who is on the network now, how many the last rotation dropped, and devices with no account flagged
+- [x] Connect-attempt rate limits (per browser and per IP) and an audit entry per evaluated attempt
+- [x] Demo seed loads devices already on the network, including one with no account
+- [x] Tests: unit (comparison, input), integration (including that a rotation drops everyone without writing to any connection row), end-to-end (a device dropped while its page sits open)
+- [x] Docs: STYLES.md §2.9, both plain-text guides, README, `docs/ADMIN.md`, `docs/USER.md`
+
+**Checkpoint definition of done:** A device can join the virtual Wi-Fi with the current password; a rotation drops every device and both the user page and the admin dashboard show it without a manual reload; the old password is refused afterwards and the new one works. Full suite green.
+
+**Session Log:**
+- [2026-09-23] [Completed] **The virtual Wi-Fi.** `/network` lets anyone name a device and join with the current network password; the admin dashboard gained an "On the network" panel. A rotation drops every device, the user's page notices within ~5 s of polling, and the admin list empties in the same round trip as the rotation (`revalidatePath` was already there) — `src/features/network/`, `src/app/network/`, `src/app/api/network/{status,connect,disconnect}`, `src/features/admin/components/connected-devices.tsx`, `src/lib/db/models.ts`, `src/components/user-header.tsx`
+- [2026-09-23] [Decision] **The disconnect is derived, not written.** A connection row stores the rotation whose password it joined with, and a device is on the network *iff* that is still the newest successful rotation. So a rotation drops everyone with **zero writes** to `network_connections`: rotation's own transaction is untouched, the network can never disagree with the password history, and it matches how real Wi-Fi behaves (nothing kicks anyone; the credential stops being current). An integration test snapshots every row, rotates, and asserts all devices are off and the rows are unchanged
+- [2026-09-23] [Decision] **The `RouterAdapter` boundary was deliberately not extended.** It stays a single `applyPassword` call; association is modelled in its own feature folder above it. Adding `connectDevice`-style methods to the adapter would have given a hardware interface client-management powers, which PROMPT.md's hardware limitation exists to prevent
+- [2026-09-23] [Tradeoff] **The connect form is a password-verification oracle** — it answers whether a supplied string is the current password, which nothing else in PassCode did. Raised with the project owner before building rather than implemented quietly, and accepted as inseparable from the feature. Bounded by: the password never returned (accepted/rejected only), a constant-time comparison over SHA-256 digests so a length mismatch isn't a faster `false`, 12 attempts per browser and 40 per IP per 10 minutes, and an `audit_log` row per evaluated attempt. Rate-limited attempts are refused before any read, so they learn nothing and can't flood the append-only log — `src/features/network/rate-limit.ts`
+- [2026-09-23] [Decision] **Anyone may connect, signed in or not** (chosen by the project owner from three options). Joining a network in real life needs the password, not an identity, and an account-only form would hide the very thing PassCode exposes: a password that spread informally. Such a device is flagged "No account" on the dashboard by name, and the demo seed ships one on purpose
+- [2026-09-23] [Decision] **Revocation does not force-disconnect a device.** A revoked person keeps the password they already hold, as they would with a real Wi-Fi password; revocation stays immediate for every *authorization* decision, including getting the next password, which is what PRD §8 requires. Rotating is what removes them from the network, so offboarding is: revoke, then rotate. Documented in `docs/ADMIN.md` so it can't be mistaken for a gap
+- [2026-09-23] [Completed] Full suite green: lint, Prettier, typecheck, production build, **88 unit** (+8), **87 integration** (+13) against Atlas, **14/14 Playwright** (+3) against a production build on `passcode_e2e_test`
+- [2026-09-23] [Note] The smallest schedulable interval is 1 hour (`HOURS`/`DAYS`/`WEEKS`, min 1), so a live demo of *scheduled* rotation needs the last success to already be older than the interval. **Rotate now** is the controllable option for presenting
 
 ---
 

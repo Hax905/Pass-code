@@ -3,8 +3,6 @@ node_modules
 package-lock.json
 coverage
 # Project planning docs are hand-maintained; don't reflow them.
-PRD.md
-STYLES.md
-TASKLIST.md
-PROMPT.md
-AGENTS.md
+docs/PRD.md
+docs/STYLES.md
+docs/TASKLIST.md

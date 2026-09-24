@@ -54,6 +54,7 @@ This document answers the PRD's open questions with concrete defaults so develop
   - `rotation_events` (id, timestamp, triggered_by [scheduled/manual/admin_id], status, password_hash_or_ref)
   - `password_requests` (id, user_id, timestamp, granted [bool])
   - `rotation_settings` (frequency, window_start, window_end, updated_by, updated_at)
+  - `network_connections` (device_name, user_id?, client [browser token], rotation_event, status, disconnected_at?, disconnect_reason?) — devices on the virtual Wi-Fi (§2.9)
   - `audit_log` (id, actor_id, action, target, timestamp, metadata)
 - **Rationale:** a single model file keeps the data model in one readable place for every session. Tradeoff accepted with the pivot: MongoDB doesn't enforce references between collections, so integrity checks (e.g. a request's user exists) live in application code and tests.
 
@@ -94,6 +95,18 @@ This document answers the PRD's open questions with concrete defaults so develop
 - **Hosting:** *Decided 2026-09-16:* none. PassCode is a demo that runs locally (`npm run build && npm start`, or `npm run dev`) and is not deployed publicly.
 - **Database hosting:** MongoDB Atlas
 - **CI:** GitHub Actions — lint, typecheck, test on every push
+
+### 2.9 The Virtual Wi-Fi (`src/features/network/`)
+
+*Added 2026-09-23, so a demo can show what rotation actually does to the people on the network.*
+
+- **Purpose:** devices "join" the virtual router's Wi-Fi by entering the current network password (`/network`, open to everyone), and a rotation drops all of them. This is what makes rotation observable instead of something an audience has to take on faith.
+- **The RouterAdapter is untouched.** It stays a single `applyPassword` call, because a real router adapter must never gain client-management powers (PRD §4). Association is modelled in its own feature folder, above that boundary — nothing here is reachable through the adapter.
+- **How the disconnect works:** a `network_connections` row records the `rotation_event` whose password the device joined with, and a device is on the network *iff* that is still the newest successful rotation. A rotation therefore drops every device **without writing to a single connection row** — the rows don't change, the current password generation moves. Rotation's own transaction is unchanged, and the network can never disagree with the password history.
+- **Security posture.** The connect form is necessarily a password-verification oracle, which nothing else in PassCode is: it answers whether a supplied string is the current password. Accepted deliberately, because that is what joining a Wi-Fi is, and bounded by — the password never being returned (only accepted/rejected), a constant-time comparison over SHA-256 digests, per-browser (12) and per-IP (40) attempt limits per 10 minutes, and every evaluated attempt written to `audit_log`. Rate-limited attempts are refused before any read, so they learn nothing and can't flood the append-only log.
+- **Anyone may attempt to connect, signed in or not.** Joining a network in real life needs the password, not an identity, and the argument PassCode makes is that an informally-shared password stops working at the next rotation. A device that joined with no account is flagged "No account" on the admin dashboard — the informal sharing, made visible.
+- **Revocation does not force-disconnect.** A revoked user's device stays on the network until the next rotation, exactly as holding a Wi-Fi password would in reality. Revocation still takes immediate effect everywhere it is an *authorization* decision (app, admin, assistant, and so getting the *next* password), which is what PRD §8 requires. Rotating is how you remove someone from the network itself.
+- **Browser identity:** an opaque `passcode_device_client` cookie (httpOnly, not a credential) scopes which devices a visitor can see and disconnect, so someone without an account can still watch their own device drop at a rotation.
 
 ---
 

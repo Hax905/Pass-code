@@ -265,6 +265,30 @@ unknown field raises rather than silently storing it.
   which makes the comparison in isWithinWindow() a pair of integer
   comparisons with no parsing.
 
+--- network_connections -----------------------------------------------------
+
+  Added 2026-09-23 with the virtual Wi-Fi (Section 37).
+
+  deviceName        String, required, trim, max 40
+  user              ObjectId -> User, optional (absent = joined with no account)
+  client            String, required   opaque per-browser token
+  rotationEvent     ObjectId -> RotationEvent, required
+  status            "CONNECTED" | "DISCONNECTED", default "CONNECTED"
+  disconnectedAt    Date, optional
+  disconnectReason  "BY_USER" | "PASSWORD_CHANGED", optional
+  sourceIp          String, optional
+  createdAt
+
+  rotationEvent is the whole design. A device is on the network if and only if
+  this is still the newest SUCCEEDED rotation, so a rotation drops every device
+  without any row here being written. status is separate because it records the
+  two things a rotation does NOT cause: leaving by choice, and a stale row
+  being closed out when the same device rejoins.
+
+  `user` is optional on purpose. Somebody who was handed the password
+  informally has no account, and the dashboard flags that device rather than
+  hiding it.
+
 --- audit_log ---------------------------------------------------------------
 
   actor     ObjectId -> User, optional (absent when the system acted)
@@ -285,7 +309,7 @@ unknown field raises rather than silently storing it.
  SECTION 6 - EVERY INDEX, AND WHAT IT IS FOR
 -------------------------------------------------------------------------------
 
-Nine indexes. None is speculative; each backs a specific query or constraint.
+Twelve indexes. None is speculative; each backs a specific query or constraint.
 
   users
     { email: 1 } UNIQUE
@@ -314,6 +338,22 @@ Nine indexes. None is speculative; each backs a specific query or constraint.
         T") and the per-user anomaly aggregation.
     { createdAt: -1 }
         The admin request log, and the "denied in the last hour" count.
+
+  network_connections
+    { client: 1, createdAt: -1 }
+        "this browser's devices" — the /network page's own list.
+    { status: 1, rotationEvent: 1, createdAt: -1 }
+        The admin panel's two numbers: who is on the network now
+        (status CONNECTED + rotationEvent = current), and how many the last
+        rotation dropped (status CONNECTED + rotationEvent != current).
+    { client: 1, deviceName: 1, rotationEvent: 1 } UNIQUE,
+                  partialFilterExpression { status: "CONNECTED" },
+                  named "one_live_connection_per_device"
+        Stops a double submit putting the same device on the network twice.
+        rotationEvent is part of the key deliberately: without it, the stale
+        row left behind by a rotation would block the device from rejoining
+        with the new password. Code 11000 becomes ALREADY_CONNECTED, the same
+        pattern as one_pending_rotation.
 
   audit_log
     { actor: 1, createdAt: -1 }      "what did this person do"
@@ -1603,6 +1643,16 @@ Recorded honestly, because each was a decision rather than an oversight.
     PRD would have permitted general answers; this was left out to limit cost
     and abuse surface.
 
+  * The virtual Wi-Fi's connect endpoint is a password-verification oracle:
+    it answers whether a supplied string is the current password, which no
+    other part of PassCode does. Inseparable from the feature, and bounded by
+    a constant-time comparison, per-browser (12) and per-IP (40) limits per 10
+    minutes, and an audit row per evaluated attempt (Section 37).
+
+  * Revocation does not disconnect a revoked person's devices. It is immediate
+    for every authorization decision, including getting the next password; the
+    rotation is what removes them from the network (Section 37).
+
   * Google's free tier may use submitted content for product improvement. The
     password never reaches the model, but chat text and display names do. Use
     CHAT_PROVIDER=anthropic, or a paid tier, where that matters.
@@ -1611,6 +1661,96 @@ Recorded honestly, because each was a decision rather than an oversight.
     whether to add SSO alongside email/password (the data model already
     allows it — passwordHash is optional), and whether admins should be able
     to view the raw current password or only confirm rotation status.
+
+-------------------------------------------------------------------------------
+ SECTION 37 - WORKFLOW: A DEVICE JOINS THE WI-FI, AND A ROTATION DROPS IT
+-------------------------------------------------------------------------------
+
+Added 2026-09-23. Placed last rather than among the other workflows so the
+numbered cross-references in the sections above stay correct.
+
+JOINING
+
+  POST /api/network/connect  { deviceName, password }
+
+    1. isSameOrigin()                     reject cross-site posts
+    2. connectInputSchema.safeParse()     name 1-40 chars, password 1-200
+    3. getOrCreateClientId()              per-browser cookie, created if absent
+    4. auth()                             optional: there may be no account
+    5. connectDevice()
+         a. clientConnectLimiter.hit()    12 per browser / 10 min
+            ipConnectLimiter.hit()        40 per IP / 10 min
+            -> refused HERE, before any read, so a throttled caller learns
+               nothing whatsoever - not even whether a password exists
+         b. getCurrentNetworkPassword()   decrypts the newest SUCCEEDED
+         c. samePassword()                timingSafeEqual over SHA-256 digests
+            -> mismatch: audit "network.connect_denied", return WRONG_PASSWORD
+         d. transaction:
+              - close out this browser's rows for the same device name on
+                OLDER rotations (status DISCONNECTED, PASSWORD_CHANGED)
+              - insert the connection row with rotationEvent = current
+              - audit "network.connected" (withAccount: true/false)
+
+  HTTP: 200 with the device, or 403 WRONG_PASSWORD, 409 NO_PASSWORD /
+  ALREADY_CONNECTED, 429 RATE_LIMITED with retryAt. The password is never in
+  any response - only whether the one supplied was right.
+
+  The transaction exists so that a stale row is never closed without the new
+  row being created, which would otherwise leave a device looking disconnected
+  after a failed insert.
+
+BEING DROPPED
+
+  Nothing disconnects anybody. That is the point.
+
+    rotateNetworkPassword() writes a new SUCCEEDED rotation_events row.
+      -> getCurrentNetworkPassword() now returns a different eventId.
+      -> every connection row still points at the previous eventId.
+      -> therefore every device is off the network, simultaneously, with zero
+         writes to network_connections.
+
+  Two readers observe it independently:
+
+    GET /api/network/status   polled by /network every 5 s while visible.
+        Each row is annotated online / droppedByRotation by comparing its
+        rotationEvent against the current one. The page shows a destructive
+        alert naming the devices and a link to the assistant. A browser that
+        has never connected is told networkReady and nothing else: even the
+        time the password last changed is withheld, because that is only
+        meaningful to a device that actually held it.
+
+    listConnectedDevices()    the admin dashboard, a Server Component.
+        rotateNowAction() already calls revalidatePath("/admin", "layout"),
+        so the list empties in the same round trip as the rotation. It also
+        counts the rows whose rotationEvent is stale, which is the "N devices
+        were dropped by the latest rotation" line.
+
+REJOINING
+
+  The same connect path with the new password. Step (d)'s sweep closes the
+  stale row as PASSWORD_CHANGED and inserts a fresh one against the new
+  rotation, so a device reads as one device over time rather than a pile of
+  rows - and the unique index has room for it, because rotationEvent is part
+  of the key.
+
+WHAT IS NOT BEHIND THE ROUTER ADAPTER
+
+  All of it. RouterAdapter stays one applyPassword method: a real adapter must
+  never gain client-management powers (PRD §4). Association is modelled
+  above that boundary, in src/features/network/, and is unreachable through it.
+
+TESTS
+
+  8 unit          samePassword (including length mismatch, non-ASCII) and the
+                  input schema.
+  13 integration  joining, wrong password, the previous password, no password
+                  yet, the mass drop (asserting the rows are UNCHANGED),
+                  rejoining, double connect, account attribution, disconnect
+                  ownership, both rate limits, and the withheld timestamp.
+  3 end-to-end    connect and refuse; a rotation dropping a device while the
+                  page sits open and untouched, then rejoining with the new
+                  password; and a visitor with no session at all connecting
+                  and being flagged "No account" on the dashboard.
 
 ===============================================================================
  END

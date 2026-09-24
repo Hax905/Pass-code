@@ -1,6 +1,6 @@
 // Boundary between PassCode and the network hardware (STYLES.md §1).
 // Password rotation is the only hardware capability PassCode may use: do not
-// add firmware, port, traffic or other device operations here (PROMPT.md).
+// add firmware, port, traffic or other device operations here (PRD §4).
 import type { ROUTER_ADAPTERS, VIRTUAL_ROUTER_FAILURE_MODES } from "@/lib/env";
 
 import { MockRouterAdapter } from "./mock-router-adapter";

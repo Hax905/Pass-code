@@ -3,6 +3,8 @@
  A technical walkthrough of the system, section by section.
 
  Written 2026-09-20, against commit 1173c44 (branch feat/phase-6-demo-readiness).
+ Section 17 was added 2026-09-23 with the virtual Wi-Fi; it sits last rather
+ than in subject order so the numbered cross-references above stay correct.
  Companion documents: PRD.md (what it must do), STYLES.md (how it is built),
  TASKLIST.md (what was built, when, and which decisions were reversed).
 ===============================================================================
@@ -46,6 +48,10 @@ There are four moving parts, and they are deliberately independent:
     generates and     ->   decides who    ->   lets admins      answers users
     applies passwords      each request        configure and    and hands out
     on a schedule          belongs to          audit            the password
+
+A fifth part, added later, is the virtual Wi-Fi itself (Section 17): devices
+join it with the current password, and a rotation drops all of them. It exists
+so that what a rotation DOES is visible, rather than only recorded.
 
 A request from a person who wants the password travels like this:
 
@@ -667,6 +673,15 @@ Recorded honestly, because each was a decision rather than an oversight:
     password never reaches the model, but chat text and display names do. Use
     CHAT_PROVIDER=anthropic, or a paid Gemini tier, where that matters.
 
+  * The virtual Wi-Fi's connect form answers whether a supplied string is the
+    current password, which nothing else in PassCode does. Accepted
+    deliberately - that is what joining a Wi-Fi is - and bounded by a
+    constant-time comparison, per-browser and per-IP attempt limits, and a log
+    entry for every attempt. See Section 17.
+
+  * Revoking someone does not throw their device off the network; the next
+    rotation does. Section 17 explains why that is the honest model.
+
   * Two questions were deliberately left open for the project owner:
     whether to add SSO alongside email/password, and whether admins should be
     able to see the raw current password or only rotation status.
@@ -699,6 +714,112 @@ from the original plan - Postgres to MongoDB, Anthropic to Gemini, physical
 router to virtual router - the change is recorded as a Pivot in TASKLIST.md
 with its reason and its downstream effects, so the decision does not have to
 be rediscovered later.
+
+-------------------------------------------------------------------------------
+ SECTION 17 - THE VIRTUAL WI-FI
+-------------------------------------------------------------------------------
+
+Added 2026-09-23. Everything above concerns producing a password and handing it
+out. This section is about what the password is FOR, and it exists for one
+reason: a rotation used to be something you could only read about afterwards in
+the history table. Now you can watch it happen to a device.
+
+WHAT IT IS
+
+  The /network page stands in for your device's Wi-Fi settings. You name a
+  device, enter the current network password, and it joins. It shows as Online
+  until the password rotates - at which point it, and every other device, is
+  dropped and has to rejoin with the new password from the assistant.
+
+  The admin dashboard holds the other half: "On the network" lists what is
+  connected right now, with a count of what the last rotation dropped.
+
+THE ONE IDEA THAT MAKES IT WORK (src/features/network/virtual-network.ts)
+
+  A connection row stores the rotation whose password the device joined with:
+
+      { deviceName, user?, client, rotationEvent, status }
+
+  A device is on the network if and only if rotationEvent is still the newest
+  SUCCEEDED rotation.
+
+  So a rotation disconnects everybody WITHOUT WRITING TO A SINGLE ROW here. The
+  rows do not change; the current generation moves out from under them. Three
+  things follow, and all three were the reason for choosing this shape:
+
+    - Rotation's own transaction is untouched. No new write, no new failure
+      mode, no chance of a half-finished mass update.
+
+    - The network can never disagree with the password history, because it is
+      derived from that history rather than stored alongside it.
+
+    - It is how real Wi-Fi behaves. Nothing "kicks" anyone; the credential the
+      association rests on simply stops being the current credential.
+
+  An integration test asserts exactly this: it snapshots every connection row,
+  rotates, then checks that no device is on the network and the rows are
+  unchanged.
+
+WHERE THE BOUNDARY IS
+
+  None of this lives behind the RouterAdapter. That interface stays a single
+  applyPassword call, because a real router adapter must never grow
+  client-management powers (PRD §4's hardware limitation). Association is
+  modelled in its own feature folder, above the adapter, and cannot be reached
+  through it.
+
+THE SECURITY TRADEOFF, STATED PLAINLY
+
+  The connect form is a password-verification oracle. It answers whether a
+  supplied string is the current network password - and until this feature, no
+  part of PassCode did that. The only way to learn the password was to hold an
+  approved account and ask the assistant, which logged the disclosure.
+
+  It was accepted because it cannot be separated from the feature: entering a
+  password and being told whether you are on the network IS joining a Wi-Fi.
+  What bounds it:
+
+    - The endpoint never returns the password. Only accepted, or rejected.
+    - The comparison is constant-time, over SHA-256 digests, so a length
+      mismatch is a plain "false" rather than a faster "false".
+    - 12 attempts per browser and 40 per IP address per 10 minutes. Against a
+      20-character generated password, that is not a search.
+    - Every evaluated attempt is written to audit_log with the device name and
+      the IP. Rate-limited attempts are refused before any read, so they learn
+      nothing at all and cannot flood the append-only log.
+
+TWO DELIBERATE CHOICES THAT LOOK LIKE BUGS
+
+  1. Anyone can connect, account or not.
+
+     Joining a network in real life needs the password, not an identity. Making
+     the form account-only would have hidden the exact thing PassCode exists to
+     expose - a password that spread informally. A device that joined with no
+     account is flagged "No account" on the dashboard, by name, until the next
+     rotation removes it. The demo seed ships one, on purpose.
+
+  2. Revoking someone does not disconnect their device.
+
+     They keep the password they already hold, exactly as they would with a
+     real Wi-Fi password. Revocation stays immediate everywhere it is an
+     AUTHORIZATION decision - signing in, the admin app, the assistant, and so
+     getting the NEXT password - which is what PRD section 8 requires. Taking
+     them off the network itself is what rotating is for. The offboarding
+     sequence is: revoke, then rotate.
+
+WHAT IT ADDED
+
+  Files      src/features/network/{virtual-network,rate-limit,client-id}.ts
+             src/app/network/, src/app/api/network/{status,connect,disconnect}
+             src/features/admin/components/connected-devices.tsx
+  Collection network_connections, three indexes (STYLES.md section 2.9)
+  Tests      8 unit, 13 integration, 3 end-to-end
+
+  The per-browser identity is an opaque httpOnly cookie
+  (passcode_device_client). It is not a credential - it only scopes which
+  simulated devices a visitor may see and disconnect - and it exists so that
+  somebody without an account can still watch their own device drop at a
+  rotation.
 
 ===============================================================================
  END
