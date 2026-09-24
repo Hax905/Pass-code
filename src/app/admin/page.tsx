@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getAnomalies } from "@/features/admin/activity";
+import { ConnectedDevices } from "@/features/admin/components/connected-devices";
 import { LocalTime } from "@/features/admin/components/local-time";
 import { RevealPassword } from "@/features/admin/components/reveal-password";
 import { RotateNowButton } from "@/features/admin/components/rotate-now-button";
@@ -123,6 +124,8 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      <ConnectedDevices />
     </>
   );
 }

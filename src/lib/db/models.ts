@@ -14,6 +14,8 @@ export const DENIAL_REASONS = [
   "REVOKED",
   "RATE_LIMITED",
 ] as const;
+export const CONNECTION_STATUSES = ["CONNECTED", "DISCONNECTED"] as const;
+export const DISCONNECT_REASONS = ["BY_USER", "PASSWORD_CHANGED"] as const;
 
 // Reuse compiled models across Next.js dev hot reloads.
 function model<TSchema extends Schema>(name: string, schema: TSchema, collection: string) {
@@ -103,6 +105,45 @@ const rotationSettingsSchema = new Schema(
   { timestamps: true, strict: "throw", optimisticConcurrency: true },
 );
 
+// A device "joined the Wi-Fi" of the virtual router. This models association
+// only: the RouterAdapter boundary stays a single applyPassword call, because a
+// real router adapter must never grow client-management powers (PRD §4).
+const networkConnectionSchema = new Schema(
+  {
+    deviceName: { type: String, required: true, trim: true, maxlength: 40 },
+    // Absent for a device that joined with no account — the informal sharing
+    // this project exists to make visible.
+    user: { type: Schema.Types.ObjectId, ref: "User" },
+    // Opaque per-browser token (httpOnly cookie), so a signed-out visitor can
+    // still see and disconnect the devices it joined with.
+    client: { type: String, required: true },
+    // The rotation whose password this device joined with. A device counts as
+    // on the network only while this is still the newest successful rotation,
+    // which is how a rotation drops everyone without writing to any row here.
+    rotationEvent: { type: Schema.Types.ObjectId, ref: "RotationEvent", required: true },
+    status: { type: String, enum: CONNECTION_STATUSES, required: true, default: "CONNECTED" },
+    disconnectedAt: { type: Date },
+    disconnectReason: { type: String, enum: DISCONNECT_REASONS },
+    sourceIp: { type: String },
+  },
+  { timestamps: { createdAt: true, updatedAt: false }, strict: "throw" },
+);
+// "My devices" on the user page.
+networkConnectionSchema.index({ client: 1, createdAt: -1 });
+// The admin panel's "who is on the network right now".
+networkConnectionSchema.index({ status: 1, rotationEvent: 1, createdAt: -1 });
+// One live row per device name per browser per password generation, so a double
+// submit can't connect the same device twice. It includes rotationEvent so that
+// reconnecting after a rotation is a new row rather than a conflict.
+networkConnectionSchema.index(
+  { client: 1, deviceName: 1, rotationEvent: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: "CONNECTED" },
+    name: "one_live_connection_per_device",
+  },
+);
+
 const auditLogSchema = new Schema(
   {
     // Absent when the actor is the system (e.g. scheduled rotation).
@@ -159,6 +200,18 @@ export const RotationSettings = model(
   rotationSettingsSchema,
   "rotation_settings",
 );
+export const NetworkConnection = model(
+  "NetworkConnection",
+  networkConnectionSchema,
+  "network_connections",
+);
 export const AuditLog = model("AuditLog", auditLogSchema, "audit_log");
 
-export const allModels = [User, RotationEvent, PasswordRequest, RotationSettings, AuditLog];
+export const allModels = [
+  User,
+  RotationEvent,
+  PasswordRequest,
+  RotationSettings,
+  NetworkConnection,
+  AuditLog,
+];

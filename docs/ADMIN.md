@@ -11,6 +11,10 @@ Sign in at `/login`. Administrators land on the dashboard at `/admin`.
   changes next.
 - **Current password**: reveal it (recorded in the audit log, hides itself after 60 seconds) or
   change it immediately with **Rotate now**.
+- **On the network**: the devices currently connected to the (virtual) Wi-Fi, and how many the last
+  rotation dropped. A device that joined without an account is flagged **No account** — that is
+  someone who was given the password informally, which is exactly what this system is for. Rotating
+  clears the whole list.
 - **Alerts** appear at the top and as a badge in the header on every admin page:
   - the last rotation failed
   - someone asked for the password more than 5 times in 24 hours (they may be passing it on)
@@ -61,3 +65,11 @@ recorded.
   still change it — a real deployment would use a database account that can only add entries.
 - PassCode only talks to a built-in **virtual router**: it doesn't change any physical router. After a
   rotation, the new password is what PassCode hands out, and it's what the (virtual) network expects.
+- **Revoking someone doesn't throw their device off the network** — they keep the password they
+  already have, just as they would with a real Wi-Fi password. What revoking stops immediately is
+  everything else: signing in, the admin app, and getting the _next_ password from the assistant.
+  **Rotate after revoking** to remove them from the network itself.
+- Anyone who knows the current password can connect a device on the Network tab, with or without an
+  account. That is deliberate — it mirrors real Wi-Fi, and it's what makes rotation worth doing.
+  Attempts are limited per browser and per IP and all of them are recorded, so the form can't be used
+  to guess the password.

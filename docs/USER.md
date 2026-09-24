@@ -24,6 +24,19 @@ recorded with your name.
 Pick the building's network on your device and paste the password. If your device saved the old one,
 tell it to forget the network first, then reconnect.
 
+In this demo the building's Wi-Fi is simulated, so there is a **Network** tab next to the assistant
+that stands in for your device's Wi-Fi settings. Give the device a name, paste the password, and
+choose **Connect**; it then shows as _Online_.
+
+## When the password changes
+
+Whatever you connected stays on the network until the password rotates. When it does, every device
+drops off at once — the Network tab notices within a few seconds and says so, without you reloading
+anything. Ask the assistant for the new password and connect again.
+
+That is the whole point of the system: a password someone passed around informally stops working at
+the next rotation, and only people with their own account can get the new one.
+
 ## What else the assistant can do
 
 - explain why the password changed and when it changes next
@@ -39,3 +52,7 @@ It can't do anything else: it won't change settings, manage accounts, or tell yo
 - **"Too many failed attempts"**: five wrong passwords lock sign-in for 15 minutes.
 - **"Your access has been revoked"**: contact the building administrator.
 - **You've asked 3 times this hour**: save the password on your devices, or wait and ask again.
+- **"That isn't the current network password"** on the Network tab: the password changed since you
+  last got it. Ask the assistant for the current one.
+- **"Too many connection attempts"**: wait a few minutes. Connect attempts are limited so the form
+  can't be used to guess the password.

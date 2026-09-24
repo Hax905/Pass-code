@@ -7,8 +7,12 @@ import "dotenv/config";
 
 import { parseArgs } from "node:util";
 
+import { connectDevice } from "@/features/network/virtual-network";
 import { MockRouterAdapter } from "@/features/rotation/mock-router-adapter";
-import { rotateNetworkPassword } from "@/features/rotation/rotation-service";
+import {
+  getCurrentNetworkPassword,
+  rotateNetworkPassword,
+} from "@/features/rotation/rotation-service";
 import { saveRotationSettings } from "@/features/rotation/settings";
 import * as users from "@/features/auth/users";
 import type { AuthorizedUser } from "@/features/auth/types";
@@ -111,6 +115,30 @@ export async function seedDemoData() {
       createdAt: new Date(now - HOUR / 2),
     },
   ]);
+
+  // Devices already on the virtual Wi-Fi, so the network doesn't start empty.
+  // Connected through the real code path with the real current password, which
+  // means a rotation drops all of them exactly as it would in a live demo.
+  const current = await getCurrentNetworkPassword();
+  if (current) {
+    const devices = [
+      { deviceName: "María's phone", userId: maria.id, client: "d1".repeat(16), ip: "10.0.0.12" },
+      { deviceName: "María's laptop", userId: maria.id, client: "d2".repeat(16), ip: "10.0.0.13" },
+      {
+        deviceName: "Carlos's tablet",
+        userId: carlos.id,
+        client: "d3".repeat(16),
+        ip: "10.0.0.20",
+      },
+      // No account: someone who was given the password informally. This is the
+      // problem PassCode exists to solve, sitting in plain sight on the
+      // dashboard until the next rotation removes it.
+      { deviceName: "Unknown laptop", client: "d4".repeat(16), ip: "10.0.0.99" },
+    ];
+    for (const device of devices) {
+      await connectDevice({ ...device, password: current.password });
+    }
+  }
 
   return { database: connection.name };
 }
